@@ -223,6 +223,26 @@
         margin-top: 8px;
         color: var(--muted);
       }
+      .auto-demo-row {
+        margin-top: 6px;
+      }
+      .auto-demo-label {
+        font-size: 10px;
+        font-weight: 600;
+        color: var(--muted);
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        cursor: pointer;
+        user-select: none;
+      }
+      .auto-demo-label input {
+        accent-color: var(--accent);
+      }
+      .auto-demo-label input:disabled {
+        opacity: 0.35;
+        cursor: not-allowed;
+      }
     </style>
   </head>
   <body>
@@ -235,6 +255,12 @@
             <span id="backendPill" class="backend-pill" title="Backend API + training stream">Backend: offline</span>
           </div>
           <div class="row" id="modeRow"></div>
+          <div class="row auto-demo-row">
+            <label class="auto-demo-label" title="Let a simple AI steer (optional). Default is arrow keys only.">
+              <input type="checkbox" id="chkAutoDemo" />
+              Auto demo (AI steering)
+            </label>
+          </div>
           <div class="row" style="margin-top: 6px">
             <button id="btnSetStart" type="button">Set START line</button>
             <button id="btnSetFinish" type="button">Set FINISH line</button>
@@ -277,6 +303,7 @@
       const btnSetStart = document.getElementById("btnSetStart");
       const btnSetFinish = document.getElementById("btnSetFinish");
       const backendPill = document.getElementById("backendPill");
+      const chkAutoDemo = /** @type {HTMLInputElement} */ (document.getElementById("chkAutoDemo"));
       if (
         !canvas ||
         !ctx ||
@@ -290,7 +317,8 @@
         !btnRestart ||
         !btnSetStart ||
         !btnSetFinish ||
-        !backendPill
+        !backendPill ||
+        !chkAutoDemo
       ) {
         throw new Error(`${APP_LOG} required DOM nodes missing`);
       }
@@ -333,6 +361,10 @@
           /** @type {null | "start" | "finish"} */
           placingLine: null,
           placeA: /** @type {null | [number, number]} */ (null),
+        },
+        practise: {
+          /** If true (Practise only), apply soft demo AI; default false = arrows only */
+          autoDemo: false,
         },
         backend: {
           baseUrl: "http://localhost:8000",
@@ -742,7 +774,23 @@
         return [x, y];
       }
 
+      function updatePractiseUi() {
+        const on = mode === Modes.PRACTISE;
+        chkAutoDemo.disabled = !on;
+        if (!on) {
+          state.practise.autoDemo = false;
+          chkAutoDemo.checked = false;
+        }
+      }
+
+      chkAutoDemo.addEventListener("change", () => {
+        state.practise.autoDemo = chkAutoDemo.checked;
+        steerSmoothed = 0;
+        throttleSmoothed = 0;
+      });
+
       function setMode(next) {
+        const prev = mode;
         mode = next;
         for (const btn of modeRow.querySelectorAll("button")) {
           btn.classList.toggle("active", btn.dataset.mode === mode);
@@ -753,12 +801,13 @@
           steerSmoothed = 0;
           throttleSmoothed = 0;
         }
-        if (state.track.centerline.length >= 2 && playerBody && ghostBody) {
+        if (state.track.centerline.length >= 2 && playerBody && ghostBody && prev !== next) {
           spawnCarsOnTrack();
         }
         if (playerBody) {
           playerBody.setActive(mode === Modes.PRACTISE || mode === Modes.RACE);
         }
+        updatePractiseUi();
       }
 
       function makeModeBtn(label, m) {
@@ -773,6 +822,7 @@
       modeRow.appendChild(makeModeBtn("Practise", Modes.PRACTISE));
       modeRow.appendChild(makeModeBtn("Train (Ghost)", Modes.TRAIN));
       modeRow.appendChild(makeModeBtn("Race", Modes.RACE));
+      updatePractiseUi();
 
       ensureSession();
       updateBackendPill();
@@ -792,19 +842,23 @@
       };
 
       async function uploadTrackToBackend() {
-        if (!state.backend.backendSessionId) return;
-        const res = await fetch(`${state.backend.baseUrl}/session/${state.backend.backendSessionId}/track`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            centerline: state.track.centerline,
-            roadWidth,
-            startLine: state.track.startLine,
-            finishLine: state.track.finishLine,
-          }),
-        });
-        if (!res.ok) {
-          throw new Error(`track upload failed (${res.status})`);
+        if (!state.backend.backendSessionId) return false;
+        try {
+          const res = await fetch(`${state.backend.baseUrl}/session/${state.backend.backendSessionId}/track`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              centerline: state.track.centerline,
+              roadWidth,
+              startLine: state.track.startLine,
+              finishLine: state.track.finishLine,
+            }),
+          });
+          if (!res.ok) throw new Error(`track upload failed (${res.status})`);
+          return true;
+        } catch (e) {
+          logWarn("track upload failed", e);
+          return false;
         }
       }
 
@@ -1191,7 +1245,7 @@
           ${trainBlock}
           <div class="healthbar" style="margin-top:6px"><div style="transform: scaleX(${state.game.health / 100})"></div></div>
           <div style="opacity:.85;margin-top:4px;font-size:9px">
-            <b>Drive</b>: arrows. <b>Draw</b>: drag track. <b>Train</b>: Start training → backend runs the ghost (no connect button).
+            <b>Practise</b>: arrows (optional Auto demo). <b>Draw</b>: drag track. <b>Train</b>: Start/Stop toggles backend ghost.
           </div>
         `;
       }
@@ -1212,9 +1266,9 @@
         if (left) steerTarget -= 1;
         if (right) steerTarget += 1;
 
-        if (mode === Modes.PRACTISE) {
-          throttleTarget = 0.55 + 0.35 * Math.sin(performance.now() / 650);
-          steerTarget = 0.85 * Math.sin(performance.now() / 420);
+        if (mode === Modes.PRACTISE && state.practise.autoDemo) {
+          throttleTarget = 0.32 + 0.2 * Math.sin(performance.now() / 900);
+          steerTarget = 0.38 * Math.sin(performance.now() / 720);
         }
 
         const k = 10;

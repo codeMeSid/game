@@ -19,7 +19,9 @@ Detected / agreed patterns (workspace was bootstrapped empty; update as the repo
 - **End session** calls **`disconnectBackend()`** then clears storage and **`resetWorld()`**.
 - Use `[wonder-car]` log prefix for app-owned console diagnostics so extension/browser noise is easy to distinguish.
 - **Backend status** is a compact text pill (`Backend: offline | connected | training | ready`), not a large circular indicator.
-- **Practise** mode = old random-drive mode; player body is physics-active only in **Practise** and **Race**; inactive in **Draw** and **Train** so the car does not collide or jitter off-screen.
+- **Practise** mode: default **arrow keys**; optional **Auto demo (AI steering)** (`#chkAutoDemo`, `state.practise.autoDemo`) uses soft bounded sin steering—disabled outside Practise. Player body is physics-active only in **Practise** and **Race**; inactive in **Draw** and **Train**.
+- **`setMode`**: call **`spawnCarsOnTrack()`** only when the mode **value** changes (`prev !== next`), not on redundant clicks; track edits still spawn via **`commitStroke`** / line placement / **`resetWorld`** / **`restartGame`**.
+- **`uploadTrackToBackend()`**: returns boolean; failures **`logWarn`** (no throw); callers tolerate offline backend.
 
 ## TypeScript / React
 

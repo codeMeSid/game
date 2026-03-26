@@ -457,3 +457,35 @@ Separate real app errors from extension noise and keep console actionable.
 - Practise/Race: stable driving, no jitter; post-turn acceleration does not instantly throw car sideways.
 - Train: ghost only; no random car; player hidden as before.
 - Speed numbers track movement; training labels readable without ML jargon.
+
+---
+
+## Plan addendum — Practise flicker/spin + console error explanation
+
+### Console errors (understanding)
+
+| Message | Typical cause |
+|--------|------------------|
+| `Could not establish connection. Receiving end does not exist.` | **Browser extension** messaging (e.g. ad blocker, password manager, Cursor/dev tools helpers). Not from wonder-car unless we call extension APIs. |
+| `DynamicTree.js ... setting 'height'` | **Third-party injected script** (often extension). Not a file in this project. |
+
+**Verify:** Incognito / extensions off → if errors disappear, ignore for app debugging.
+
+### Practise issues — fix plan (`index.html`)
+
+1. **Circles / “random” driving:** Practise currently applies **sinusoidal auto steer** → natural **orbits**. Change default Practise to **arrow-keys only**; add optional **Auto demo** toggle with softer, bounded steering.
+2. **Flicker / “multi cars”:** Guard **`spawnCarsOnTrack()`** so it does not run on redundant `setMode` (same mode); only on mode **change** or after **track commit**. Wrap **`uploadTrackToBackend()`** in try/catch on canvas handlers.
+3. **Crashes:** With manual default + softer auto demo + existing traction limits, wall hits should drop.
+
+### Verification
+
+- Practise: one car, stable spawn, no strobing when switching modes slowly.
+- Auto demo optional and clearly labeled.
+- Clean browser profile: no `DynamicTree.js` / receiving-end spam from extensions.
+
+### Status (implemented in `/develop` — Practise + upload hardening)
+
+- **Practise** defaults to **manual** (arrows); **Auto demo (AI steering)** checkbox enables softer sin demo; disabled when not in Practise.
+- **`setMode`**: **`spawnCarsOnTrack()`** only when `prev !== next` (avoids flicker on repeat mode clicks).
+- **`uploadTrackToBackend()`**: try/catch, **`logWarn`**, returns boolean; no unhandled rejections from failed uploads.
+- HUD hint updated for Practise / Train.
