@@ -17,6 +17,9 @@ Detected / agreed patterns (workspace was bootstrapped empty; update as the repo
 - **START/FINISH**: default lines are created when a stroke has ≥2 points; user can override via **Set START line** / **Set FINISH line** (click-drag on canvas).
 - **Spawn**: player and ghost use **`spawnCarsOnTrack()`** from the start-line midpoint (or first center segment) with heading along the track.
 - **End session** calls **`disconnectBackend()`** then clears storage and **`resetWorld()`**.
+- Use `[wonder-car]` log prefix for app-owned console diagnostics so extension/browser noise is easy to distinguish.
+- **Backend status** is a compact text pill (`Backend: offline | connected | training | ready`), not a large circular indicator.
+- **Practise** mode = old random-drive mode; player body is physics-active only in **Practise** and **Race**; inactive in **Draw** and **Train** so the car does not collide or jitter off-screen.
 
 ## TypeScript / React
 

@@ -249,3 +249,211 @@ Add these fields to each WebSocket `metrics` message:
 - **Player raycasts removed**; training ghost rays only in **Train** mode (backend rays or fallback `castRays`).
 - **Ghost** inactive during training preview (kinematic `setTransform`); **Race** baseline ghost still uses physics when backend disconnected.
 - **Z-index**: HUD above game-over overlay so **End session** stays clickable.
+
+---
+
+## Plan addendum — start/finish line, lap success, loop snap, arrows, race countdown
+
+### Goal
+
+1. **One start/finish line** — Single segment (or aliased `startLine` === `finishLine`) used for laps; update UI from separate START/FINISH to one **Start/finish line** control.
+2. **Ghost / training success** — Success requires **traversing the track** and **crossing the start/finish line** in the forward direction (with progress / debouncing to avoid false positives).
+3. **Arrow keys** — Primary driving input for player (document; optional: keep WASD as secondary).
+4. **Closed loop snap** — When first and last centerline points are within a threshold, snap together for a continuous closed circuit.
+5. **Race mode** — **Start race** button → **countdown** overlay (e.g. 3-2-1-GO) → both cars run; ghost tries to win (baseline or trained policy).
+
+### Implementation sequence
+
+1. **Track schema (`index.html` + backend payload):** Introduce `startFinishLine` (two points); migrate loaded data from `startLine`/`finishLine` to a single line; remove duplicate markers in UI.
+2. **`snapLoopIfNeeded()`** after stroke commit (and optional button): if `dist(center[0], center[last]) < threshold`, align last to first (or average) and rebuild walls.
+3. **Lap math:** Arc-length along centerline; max progress per episode; segment intersection with `startFinishLine` + forward tangent test; debounce lap increments.
+4. **Ghost baseline + training:** Success when lap completes; backend `main.py` reward/termination aligned with same geometry and progress rules.
+5. **Controls:** Filter `stepPlayer` to **arrow keys** (optionally retain WASD).
+6. **Race state machine:** `idle` → `countdown` → `racing`; **Start race** button; overlay shows numbers; zero motion during countdown; on GO enable player + ghost competition; optional “winner” when first to complete N laps or cross after full progress.
+
+### Verification
+
+- One visible line for start/finish; saved JSON has a single logical line.
+- Ghost/training registers success only after a valid lap (closed loop) or documented fallback for open tracks.
+- Arrows drive the car; snap visibly closes gaps when endpoints meet.
+- Race only starts after countdown; ghost races for win once **GO** shows.
+
+---
+
+## Plan addendum — backend-guided training connection + visibility rules
+
+### Goal
+
+- Make training strictly **backend-guided**.
+- If backend is unavailable/disconnects, training must auto-stop.
+- During training and end-session, player car is hidden (training view is backend ghost only).
+
+### Frontend state model (`index.html`)
+
+- Add explicit state:
+  - `backendConnection: disconnected | connecting | connected | error`
+  - `trainingState: idle | starting | running | stopping | stopped | error`
+- Transition helpers:
+  - `startTrainingFlow()`
+  - `stopTrainingFlow(reason)`
+  - `onBackendDisconnect(reason)`
+
+### Connection / training contract
+
+1. `POST /session`
+2. `POST /session/{id}/track`
+3. Open `WS /ws/session/{id}` and wait for first ack/metrics
+4. `POST /session/{id}/train/start`
+5. On ws `close/error` OR heartbeat timeout OR HTTP failure:
+   - `trainingState -> stopped`
+   - clear training sim buffer
+   - update HUD to stopped/error
+
+### Render gating rules
+
+- `mode === train && trainingState === running`:
+  - render backend ghost + rays only
+  - **hide player car**
+- `endSession()`:
+  - call `disconnectBackend()`
+  - clear training/race runtime state
+  - hide cars until next valid spawn/start
+
+### Reliability hardening
+
+- Heartbeat watchdog: if no `metrics/sim_state` for ~1.5-2.0s during running training, auto-stop with message “backend disconnected”.
+- Guard start button: disabled unless backend connected and track valid.
+- `disconnectBackend()` always idempotent and forces `trainingState=stopped`.
+
+### Verification
+
+- Start training with backend down -> no fake/local training; status shows stopped/error.
+- Kill backend mid-training -> training stops automatically; ghost/player training visuals halt.
+- In training, player car is not visible.
+- On end session, no car remains visible and no stale training stream continues.
+
+---
+
+## Plan addendum — highest training quality (crash-early fix)
+
+### Goal
+
+Improve backend trainer so ghost learns stable lap driving instead of brief movement + early crashes.
+
+### Phase 1 (immediate quality gains)
+
+1. **Upgrade trainer core** in `apps/api/main.py`
+   - Proper PPO clip objective + GAE-lambda advantages.
+   - Stable value/entropy losses and gradient clipping.
+2. **Reward redesign**
+   - Strong forward progress along centerline.
+   - Large terminal reward for valid lap completion at start/finish line.
+   - Collision/off-track penalties tied to impact/severity.
+3. **Readiness quality gate**
+   - `ready` only if rolling success rate + collision-rate + return-stability thresholds are met.
+4. **Curriculum**
+   - Begin with wider road + lower speed cap, then scale difficulty.
+
+### Phase 2 (true recurrent quality path)
+
+1. **Sequence-aware recurrent PPO**
+   - Preserve hidden state boundaries and train on temporal chunks.
+2. **Observation normalization**
+   - Running mean/std for obs features; consistent at inference time.
+3. **Checkpoints + evaluation**
+   - Save periodic checkpoints, track “best model” by deterministic eval episodes.
+4. **Quality presets**
+   - `fast | balanced | quality` profiles for rollout steps / epochs / batch sizes.
+
+### Frontend metrics improvements (`index.html`)
+
+- Show quality-focused metrics during training:
+  - `successRate`, `collisionRate`, `avgEpisodeLen`, `evalScore`, `bestGeneration`
+- Keep `ready` badge tied to backend quality gate, not just return.
+
+### Verification
+
+- On a representative loop track, training transitions from early crashes to sustained lap completion.
+- Success rate and episode length trend upward; collision rate trends downward.
+- `ready` appears only after sustained competence window.
+
+---
+
+## Plan addendum — console error triage and cleanup
+
+### Goal
+
+Separate real app errors from extension noise and keep console actionable.
+
+### Triage sequence
+
+1. Re-run in a clean browser profile (or Incognito with extensions disabled).
+2. If `DynamicTree.js` and “Receiving end does not exist” disappear, classify as external extension noise.
+3. Keep only app-owned issues in active bug list.
+
+### App-owned fixes
+
+1. Add favicon reference/file to remove `:5173/favicon.ico 404`.
+2. Add explicit `[wonder-car]`-prefixed logs for:
+   - backend connect/start/stop failures
+   - websocket close/error and heartbeat timeout
+3. Add null-guards for DOM element access and idempotent state transitions where needed.
+
+### Verification
+
+- Clean-profile run shows no extension stack traces.
+- App console contains only relevant `[wonder-car]` status/errors.
+- Backend training disconnects still produce clear, single-stop transition logs.
+
+### Status (implemented in `/develop`)
+
+- Added inline favicon link in `index.html` to remove `:5173/favicon.ico 404`.
+- Added `[wonder-car]`-prefixed frontend logging (`info/warn/error`) for backend connect/train/ws flows.
+- Hardened frontend backend calls with explicit `res.ok` checks and clear failure logs.
+- Added websocket `onerror` handling and ensured `onclose` resets training status/buffer.
+- Added required DOM node guard at startup to fail fast with clear app-specific error.
+- Fixed backend warning in `apps/api/main.py` by switching to `adv.std(unbiased=False)`.
+
+### Status (implemented in `/develop` — UX overhaul batch)
+
+- Removed **Connect backend**; **Start/Stop training** single toggle; compact **Backend:** pill (text, not a large circular light).
+- Renamed **Drive (random)** → **Practise**; random AI only in Practise; player car **inactive/hidden** in Draw & Train (active only Practise/Race).
+- **Larger car** fixtures; **smoother steering** (slew + lower torque); **sub-stepped** `world.step`; stronger **lateral grip vs speed**.
+- **Race-themed** sharp UI (monospace, borders, accent).
+- HUD: **You / Ghost km/h**; training block uses plain-language labels (update step, refinement pass, practice steps, success rate, score).
+- Backend: slightly **softer** training sim (steer rate, wall damage), longer rollouts, lower LR.
+
+---
+
+## Plan addendum — UX overhaul, physics, practise/race, training HUD
+
+### Issues to address
+
+1. Remove **Connect backend** button; replace with **auto-connect on train start** and a **small** backend status indicator (not a large circular signal).
+2. **Steering** too snappy → rate-limit steering input, lower torque gain, optional angular velocity clamp.
+3. **Car jumping** → sub-step physics, clamp forces/torque, verify no duplicate force application; ghost inactive when unused.
+4. **UI** → race theme: sharp panels, condensed typography, accent borders, carbon/dark base.
+5. **Post-turn acceleration slide** → stronger speed-dependent lateral friction; smooth throttle; cap combined slip.
+6. **Training quality** → continue PPO/GAE + reward/curriculum in `apps/api/main.py`.
+7. **Larger car** → increase Planck box half-extents + matching `renderCar` / nose graphic scale.
+8. Rename **Drive (random)** → **Practise** (keep or alias mode id).
+9. **Single Start/Stop training** button (toggle); remove separate connect flow from UI.
+10. **Random/practise car** visible only in **Practise** and **Race** (hide in Draw/Train per product rules).
+11. HUD: **Player speed** + **Ghost speed** (same units, e.g. km/h or “u/s”).
+12. Training HUD: human labels — e.g. “Learning step (generation)”, “Success rate”, “Avg episode length”, “Crashes”, tooltips for jargon.
+
+### Implementation order (`index.html`)
+
+1. CSS: new race theme variables, panels, typography; compact backend status pill (replace any circular motif).
+2. Remove connect button; add `trainToggle` wired to connect-if-needed + start/stop; update DOM guards.
+3. Rename mode button Practise; gate “random drive” visibility and AI to Practise + Race only.
+4. Physics tuning: larger fixture, steering slew, torque/force limits, optional substeps, lateral friction vs speed.
+5. HUD: speed readouts + training plain-language stats block.
+6. Backend: training quality tranche (see prior addendum).
+
+### Verification
+
+- Training starts without Connect button; status visible but minimal.
+- Practise/Race: stable driving, no jitter; post-turn acceleration does not instantly throw car sideways.
+- Train: ghost only; no random car; player hidden as before.
+- Speed numbers track movement; training labels readable without ML jargon.
