@@ -1,0 +1,1153 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>wonder-car</title>
+    <style>
+      :root {
+        --bg: #0b0f17;
+        --panel: rgba(18, 24, 38, 0.9);
+        --text: #e8eefc;
+        --muted: #93a3c9;
+        --accent: #6aa6ff;
+        --danger: #ff4d6d;
+        --ok: #2dd4bf;
+        --road: #1b2436;
+        --roadEdge: #5c6b8c;
+      }
+      html,
+      body {
+        height: 100%;
+        margin: 0;
+        background: radial-gradient(1200px 700px at 50% 10%, #121a2b 0%, var(--bg) 60%, #070a10 100%);
+        color: var(--text);
+        font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji",
+          "Segoe UI Emoji";
+        overflow: hidden;
+      }
+      .wrap {
+        position: relative;
+        height: 100%;
+        display: grid;
+        place-items: center;
+      }
+      canvas {
+        width: min(96vw, calc(96vh * 16 / 9));
+        height: min(96vh, calc(96vw * 9 / 16));
+        aspect-ratio: 16 / 9;
+        border-radius: 14px;
+        box-shadow: 0 18px 60px rgba(0, 0, 0, 0.55);
+        background: linear-gradient(180deg, rgba(255, 255, 255, 0.02), rgba(255, 255, 255, 0.01));
+      }
+      .ui {
+        position: absolute;
+        top: 14px;
+        left: 14px;
+        right: 14px;
+        z-index: 20;
+        display: grid;
+        grid-template-columns: 1fr auto;
+        gap: 10px;
+        pointer-events: none;
+      }
+      .panel {
+        pointer-events: auto;
+        background: var(--panel);
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        border-radius: 12px;
+        padding: 10px 12px;
+        backdrop-filter: blur(10px);
+      }
+      .row {
+        display: flex;
+        gap: 8px;
+        flex-wrap: wrap;
+        align-items: center;
+      }
+      button {
+        appearance: none;
+        border: 1px solid rgba(255, 255, 255, 0.14);
+        background: rgba(255, 255, 255, 0.06);
+        color: var(--text);
+        padding: 7px 10px;
+        border-radius: 10px;
+        font-weight: 600;
+        cursor: pointer;
+      }
+      button:hover {
+        border-color: rgba(255, 255, 255, 0.24);
+        background: rgba(255, 255, 255, 0.08);
+      }
+      button.active {
+        border-color: rgba(106, 166, 255, 0.6);
+        background: rgba(106, 166, 255, 0.16);
+      }
+      button.danger {
+        border-color: rgba(255, 77, 109, 0.6);
+        background: rgba(255, 77, 109, 0.12);
+      }
+      .hud {
+        display: grid;
+        gap: 6px;
+        font-size: 12px;
+        color: var(--muted);
+      }
+      .hud b {
+        color: var(--text);
+        font-weight: 700;
+      }
+      .pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 2px 8px;
+        border-radius: 999px;
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        background: rgba(255, 255, 255, 0.05);
+      }
+      .pill.ok {
+        border-color: rgba(45, 212, 191, 0.4);
+        background: rgba(45, 212, 191, 0.12);
+        color: #bff7ef;
+      }
+      .pill.warn {
+        border-color: rgba(255, 189, 89, 0.45);
+        background: rgba(255, 189, 89, 0.12);
+        color: #ffe3b0;
+      }
+      .healthbar {
+        height: 8px;
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.08);
+        overflow: hidden;
+        border: 1px solid rgba(255, 255, 255, 0.08);
+      }
+      .healthbar > div {
+        height: 100%;
+        width: 100%;
+        background: linear-gradient(90deg, var(--ok), #7c3aed, var(--danger));
+        transform-origin: left;
+      }
+      .centerOverlay {
+        position: absolute;
+        inset: 0;
+        z-index: 10;
+        display: grid;
+        place-items: center;
+        pointer-events: auto;
+        font-weight: 900;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        text-shadow: 0 10px 35px rgba(0, 0, 0, 0.75);
+      }
+      .centerOverlay .card {
+        padding: 18px 22px;
+        border-radius: 16px;
+        background: rgba(0, 0, 0, 0.35);
+        border: 1px solid rgba(255, 255, 255, 0.14);
+        backdrop-filter: blur(10px);
+        text-align: center;
+      }
+      .centerOverlay .row {
+        margin-top: 14px;
+        justify-content: center;
+      }
+      .hint {
+        opacity: 0.9;
+        font-weight: 700;
+        letter-spacing: 0.02em;
+        text-transform: none;
+        font-size: 12px;
+        margin-top: 8px;
+        color: var(--muted);
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <canvas id="c" width="1280" height="720"></canvas>
+      <div class="ui">
+        <div class="panel">
+          <div class="row" id="modeRow"></div>
+          <div class="row" style="margin-top: 8px">
+            <button id="btnSetStart" type="button">Set START line</button>
+            <button id="btnSetFinish" type="button">Set FINISH line</button>
+            <button id="btnConnect">Connect backend</button>
+            <button id="btnTrain">Start training</button>
+            <button id="btnStopTrain">Stop training</button>
+            <button id="btnEnd" class="danger">End session</button>
+          </div>
+        </div>
+        <div class="panel hud" id="hud"></div>
+      </div>
+      <div class="centerOverlay" id="overlay" style="display: none">
+        <div class="card">
+          <div style="font-size: 34px; color: #fff" id="overlayTitle">GAME OVER</div>
+          <div class="hint" id="overlayHint">Restart to continue, or End session to clear the track.</div>
+          <div class="row">
+            <button id="btnRestart" type="button">Restart</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/planck-js@0.3.31/dist/planck.min.js"></script>
+    <script type="module">
+      const pl = window.planck;
+
+      const canvas = /** @type {HTMLCanvasElement} */ (document.getElementById("c"));
+      const ctx = /** @type {CanvasRenderingContext2D} */ (canvas.getContext("2d"));
+      const hudEl = document.getElementById("hud");
+      const overlayEl = document.getElementById("overlay");
+      const overlayTitleEl = document.getElementById("overlayTitle");
+      const overlayHintEl = document.getElementById("overlayHint");
+
+      const modeRow = document.getElementById("modeRow");
+      const btnConnect = document.getElementById("btnConnect");
+      const btnTrain = document.getElementById("btnTrain");
+      const btnStopTrain = document.getElementById("btnStopTrain");
+      const btnEnd = document.getElementById("btnEnd");
+      const btnRestart = document.getElementById("btnRestart");
+      const btnSetStart = document.getElementById("btnSetStart");
+      const btnSetFinish = document.getElementById("btnSetFinish");
+
+      const Modes = {
+        DRAW: "draw",
+        DRIVE_RANDOM: "drive_random",
+        TRAIN: "train",
+        RACE: "race",
+      };
+
+      /** @type {keyof typeof Modes} */
+      let mode = Modes.DRAW;
+
+      const pxPerMeter = 10; // physics scale
+      const roadWidth = 36;
+      const roadHalf = roadWidth / 2;
+      const maxRay = 120;
+      const sensorFovDeg = 140;
+      const sensorN = 11;
+
+      const state = {
+        sessionId: null,
+        track: {
+          centerline: /** @type {Array<[number,number]>} */ ([]),
+          startLine: /** @type {null | Array<[number,number]>} */ (null),
+          finishLine: /** @type {null | Array<[number,number]>} */ (null),
+        },
+        draw: {
+          drawing: false,
+          lastPt: null,
+          /** @type {null | "start" | "finish"} */
+          placingLine: null,
+          placeA: /** @type {null | [number, number]} */ (null),
+        },
+        backend: {
+          baseUrl: "http://localhost:8000",
+          backendSessionId: null,
+          ws: null,
+          connected: false,
+          status: "stopped",
+          generation: 0,
+          epoch: 0,
+          epochTotal: null,
+          timesteps: 0,
+          avgReturn: 0,
+          successRate: 0,
+          buffering: false,
+          simBuffer: /** @type {Array<any>} */ ([]),
+          lastSimTs: 0,
+        },
+        game: {
+          health: 100,
+          gameover: false,
+          blast: /** @type {Array<{x:number,y:number,vx:number,vy:number,life:number,r:number}>} */ ([]),
+        },
+      };
+
+      function uuid() {
+        return crypto.randomUUID ? crypto.randomUUID() : String(Math.random()).slice(2) + String(Date.now());
+      }
+
+      function ensureSession() {
+        let sid = sessionStorage.getItem("wc_session_id");
+        if (!sid) {
+          sid = uuid();
+          sessionStorage.setItem("wc_session_id", sid);
+        }
+        state.sessionId = sid;
+        const key = `wc_track_${sid}`;
+        const raw = localStorage.getItem(key);
+        if (raw) {
+          try {
+            const parsed = JSON.parse(raw);
+            if (parsed && parsed.centerline) state.track.centerline = parsed.centerline;
+            if (parsed && parsed.startLine) state.track.startLine = parsed.startLine;
+            if (parsed && parsed.finishLine) state.track.finishLine = parsed.finishLine;
+            if (state.track.centerline.length >= 2) ensureDefaultStartFinish();
+          } catch {}
+        }
+      }
+
+      function saveTrack() {
+        if (!state.sessionId) return;
+        const key = `wc_track_${state.sessionId}`;
+        localStorage.setItem(
+          key,
+          JSON.stringify({
+            centerline: state.track.centerline,
+            startLine: state.track.startLine,
+            finishLine: state.track.finishLine,
+            roadWidth,
+          })
+        );
+      }
+
+      function disconnectBackend() {
+        try {
+          if (state.backend.ws) state.backend.ws.close();
+        } catch {}
+        state.backend.ws = null;
+        state.backend.connected = false;
+        state.backend.backendSessionId = null;
+        state.backend.simBuffer = [];
+        state.backend.status = "stopped";
+        state.backend.generation = 0;
+        state.backend.epoch = 0;
+        state.backend.epochTotal = null;
+        state.backend.timesteps = 0;
+        state.backend.avgReturn = 0;
+        state.backend.successRate = 0;
+      }
+
+      function endSession() {
+        disconnectBackend();
+        const sid = sessionStorage.getItem("wc_session_id");
+        if (sid) {
+          localStorage.removeItem(`wc_track_${sid}`);
+        }
+        sessionStorage.removeItem("wc_session_id");
+        state.sessionId = null;
+        state.track.centerline = [];
+        state.track.startLine = null;
+        state.track.finishLine = null;
+        state.draw.placingLine = null;
+        state.draw.placeA = null;
+        state.draw.drawing = false;
+        ensureSession();
+        saveTrack();
+        resetWorld();
+      }
+
+      function restartGame() {
+        state.game.gameover = false;
+        state.game.health = 100;
+        state.game.blast = [];
+        overlayEl.style.display = "none";
+        if (world && playerBody && ghostBody) {
+          spawnCarsOnTrack();
+        } else {
+          resetWorld();
+        }
+      }
+
+      function dist2(a, b) {
+        const dx = a[0] - b[0];
+        const dy = a[1] - b[1];
+        return dx * dx + dy * dy;
+      }
+
+      function unit(vx, vy) {
+        const n = Math.hypot(vx, vy);
+        if (n < 1e-9) return [0, 0];
+        return [vx / n, vy / n];
+      }
+
+      function offsetPolyline(points, offset) {
+        if (points.length < 2) return points.slice();
+        const out = [];
+        const n = points.length;
+        for (let i = 0; i < n; i++) {
+          const [x, y] = points[i];
+          let tx = 1,
+            ty = 0;
+          if (i === 0) {
+            const [x2, y2] = points[i + 1];
+            [tx, ty] = unit(x2 - x, y2 - y);
+          } else if (i === n - 1) {
+            const [x1, y1] = points[i - 1];
+            [tx, ty] = unit(x - x1, y - y1);
+          } else {
+            const [x1, y1] = points[i - 1];
+            const [x2, y2] = points[i + 1];
+            const [t1x, t1y] = unit(x - x1, y - y1);
+            const [t2x, t2y] = unit(x2 - x, y2 - y);
+            [tx, ty] = unit(t1x + t2x, t1y + t2y);
+            if (Math.abs(tx) < 1e-9 && Math.abs(ty) < 1e-9) {
+              tx = t2x;
+              ty = t2y;
+            }
+          }
+          const nx = -ty,
+            ny = tx;
+          out.push([x + nx * offset, y + ny * offset]);
+        }
+        return out;
+      }
+
+      function polySegments(points) {
+        const segs = [];
+        for (let i = 0; i < points.length - 1; i++) {
+          const a = points[i];
+          const b = points[i + 1];
+          segs.push([a[0], a[1], b[0], b[1]]);
+        }
+        return segs;
+      }
+
+      function ensureDefaultStartFinish() {
+        const c = state.track.centerline;
+        if (c.length < 2) return;
+        const [p0, p1] = [c[0], c[1]];
+        const [tx, ty] = unit(p1[0] - p0[0], p1[1] - p0[1]);
+        const nx = -ty,
+          ny = tx;
+        const w = roadHalf;
+        if (!state.track.startLine) {
+          state.track.startLine = [
+            [p0[0] + nx * w, p0[1] + ny * w],
+            [p0[0] - nx * w, p0[1] - ny * w],
+          ];
+        }
+        const n0 = c.length - 1;
+        if (!state.track.finishLine) {
+          const a = c[n0 - 1];
+          const b = c[n0];
+          const [tx2, ty2] = unit(b[0] - a[0], b[1] - a[1]);
+          const nx2 = -ty2,
+            ny2 = tx2;
+          state.track.finishLine = [
+            [b[0] + nx2 * w, b[1] + ny2 * w],
+            [b[0] - nx2 * w, b[1] - ny2 * w],
+          ];
+        }
+      }
+
+      function getSpawnPose() {
+        const c = state.track.centerline;
+        if (c.length < 2) {
+          return { mx: 3, my: 3, ang: 0 };
+        }
+        let px, py, ang;
+        const sl = state.track.startLine;
+        if (sl && sl.length === 2) {
+          px = (sl[0][0] + sl[1][0]) / 2;
+          py = (sl[0][1] + sl[1][1]) / 2;
+          const p0 = c[0],
+            p1 = c[1];
+          ang = Math.atan2(p1[1] - p0[1], p1[0] - p0[0]);
+        } else {
+          const p0 = c[0],
+            p1 = c[1];
+          px = p0[0];
+          py = p0[1];
+          ang = Math.atan2(p1[1] - p0[1], p1[0] - p0[0]);
+        }
+        return { mx: px / pxPerMeter, my: py / pxPerMeter, ang };
+      }
+
+      function spawnCarsOnTrack() {
+        if (!playerBody || !ghostBody || !world) return;
+        const pose = getSpawnPose();
+        playerBody.setTransform(pl.Vec2(pose.mx, pose.my), pose.ang);
+        playerBody.setLinearVelocity(pl.Vec2(0, 0));
+        playerBody.setAngularVelocity(0);
+        const off = 0.65;
+        const gx = pose.mx - Math.cos(pose.ang) * off;
+        const gy = pose.my - Math.sin(pose.ang) * off;
+        ghostBody.setTransform(pl.Vec2(gx, gy), pose.ang);
+        ghostBody.setLinearVelocity(pl.Vec2(0, 0));
+        ghostBody.setAngularVelocity(0);
+      }
+
+      function rebuildWalls() {
+        destroyWalls();
+        if (state.track.centerline.length < 2) return;
+        const left = offsetPolyline(state.track.centerline, +roadHalf);
+        const right = offsetPolyline(state.track.centerline, -roadHalf);
+        const segs = polySegments(left).concat(polySegments(right));
+        for (const [ax, ay, bx, by] of segs) {
+          const body = world.createBody();
+          body.createFixture(pl.Edge(pl.Vec2(ax / pxPerMeter, ay / pxPerMeter), pl.Vec2(bx / pxPerMeter, by / pxPerMeter)), {
+            friction: 0.8,
+            userData: { kind: "wall" },
+          });
+          wallBodies.push(body);
+        }
+      }
+
+      function drawTrack() {
+        if (state.track.centerline.length < 2) return;
+        const left = offsetPolyline(state.track.centerline, +roadHalf);
+        const right = offsetPolyline(state.track.centerline, -roadHalf);
+
+        // road fill
+        ctx.save();
+        ctx.globalAlpha = 1.0;
+        ctx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue("--road").trim();
+        ctx.beginPath();
+        ctx.moveTo(left[0][0], left[0][1]);
+        for (let i = 1; i < left.length; i++) ctx.lineTo(left[i][0], left[i][1]);
+        for (let i = right.length - 1; i >= 0; i--) ctx.lineTo(right[i][0], right[i][1]);
+        ctx.closePath();
+        ctx.fill();
+
+        // edges
+        ctx.strokeStyle = getComputedStyle(document.documentElement).getPropertyValue("--roadEdge").trim();
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.moveTo(left[0][0], left[0][1]);
+        for (let i = 1; i < left.length; i++) ctx.lineTo(left[i][0], left[i][1]);
+        ctx.stroke();
+
+        ctx.beginPath();
+        ctx.moveTo(right[0][0], right[0][1]);
+        for (let i = 1; i < right.length; i++) ctx.lineTo(right[i][0], right[i][1]);
+        ctx.stroke();
+
+        // centerline (subtle)
+        ctx.globalAlpha = 0.35;
+        ctx.strokeStyle = "#9fb4ff";
+        ctx.lineWidth = 2;
+        ctx.setLineDash([8, 10]);
+        ctx.beginPath();
+        const p0 = state.track.centerline[0];
+        ctx.moveTo(p0[0], p0[1]);
+        for (let i = 1; i < state.track.centerline.length; i++) {
+          const p = state.track.centerline[i];
+          ctx.lineTo(p[0], p[1]);
+        }
+        ctx.stroke();
+        ctx.restore();
+
+        drawLineMarker(state.track.startLine, "#2dd4bf", "START");
+        drawLineMarker(state.track.finishLine, "#ffbd59", "FINISH");
+      }
+
+      function drawLineMarker(line, color, label) {
+        if (!line || line.length !== 2) return;
+        const [a, b] = line;
+        ctx.save();
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 6;
+        ctx.lineCap = "round";
+        ctx.globalAlpha = 0.95;
+        ctx.beginPath();
+        ctx.moveTo(a[0], a[1]);
+        ctx.lineTo(b[0], b[1]);
+        ctx.stroke();
+        ctx.fillStyle = "#fff";
+        ctx.globalAlpha = 0.9;
+        ctx.font = "700 12px ui-sans-serif, system-ui";
+        ctx.fillText(label, (a[0] + b[0]) / 2 + 8, (a[1] + b[1]) / 2 - 8);
+        ctx.restore();
+      }
+
+      function toCanvasPoint(evt) {
+        const r = canvas.getBoundingClientRect();
+        const x = ((evt.clientX - r.left) / r.width) * canvas.width;
+        const y = ((evt.clientY - r.top) / r.height) * canvas.height;
+        return [x, y];
+      }
+
+      function setMode(next) {
+        mode = next;
+        for (const btn of modeRow.querySelectorAll("button")) {
+          btn.classList.toggle("active", btn.dataset.mode === mode);
+        }
+        if (state.track.centerline.length >= 2 && playerBody && ghostBody) {
+          spawnCarsOnTrack();
+        }
+      }
+
+      function makeModeBtn(label, m) {
+        const b = document.createElement("button");
+        b.textContent = label;
+        b.dataset.mode = m;
+        b.onclick = () => setMode(m);
+        return b;
+      }
+
+      modeRow.appendChild(makeModeBtn("Draw", Modes.DRAW));
+      modeRow.appendChild(makeModeBtn("Drive (Random)", Modes.DRIVE_RANDOM));
+      modeRow.appendChild(makeModeBtn("Train (Ghost)", Modes.TRAIN));
+      modeRow.appendChild(makeModeBtn("Race", Modes.RACE));
+
+      ensureSession();
+
+      btnEnd.onclick = () => endSession();
+      btnRestart.onclick = () => restartGame();
+      btnSetStart.onclick = () => {
+        setMode(Modes.DRAW);
+        state.draw.placingLine = "start";
+        state.draw.placeA = null;
+      };
+      btnSetFinish.onclick = () => {
+        setMode(Modes.DRAW);
+        state.draw.placingLine = "finish";
+        state.draw.placeA = null;
+      };
+
+      // Backend connection / training
+      async function connectBackend() {
+        try {
+          const res = await fetch(`${state.backend.baseUrl}/session`, { method: "POST" });
+          const js = await res.json();
+          state.backend.backendSessionId = js.sessionId;
+          await uploadTrackToBackend();
+          const ws = new WebSocket(`ws://localhost:8000/ws/session/${state.backend.backendSessionId}`);
+          state.backend.ws = ws;
+          state.backend.connected = true;
+          state.backend.simBuffer = [];
+          ws.onmessage = (ev) => {
+            try {
+              const msg = JSON.parse(ev.data);
+              if (msg.type === "metrics") {
+                state.backend.status = msg.status ?? state.backend.status;
+                state.backend.generation = msg.generation ?? state.backend.generation;
+                state.backend.epoch = msg.epoch ?? state.backend.epoch;
+                state.backend.epochTotal = msg.epoch_total ?? state.backend.epochTotal;
+                state.backend.timesteps = msg.timesteps ?? state.backend.timesteps;
+                state.backend.avgReturn = msg.avgReturn ?? state.backend.avgReturn;
+                state.backend.successRate = msg.successRate ?? state.backend.successRate;
+              } else if (msg.type === "sim_state") {
+                state.backend.simBuffer.push(msg);
+                state.backend.lastSimTs = performance.now();
+                if (state.backend.simBuffer.length > 240) state.backend.simBuffer.splice(0, state.backend.simBuffer.length - 240);
+              }
+            } catch {}
+          };
+          ws.onclose = () => {
+            state.backend.connected = false;
+            state.backend.ws = null;
+          };
+        } catch (e) {
+          state.backend.connected = false;
+          state.backend.ws = null;
+          console.warn(e);
+        }
+      }
+
+      async function uploadTrackToBackend() {
+        if (!state.backend.backendSessionId) return;
+        await fetch(`${state.backend.baseUrl}/session/${state.backend.backendSessionId}/track`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            centerline: state.track.centerline,
+            roadWidth,
+            startLine: state.track.startLine,
+            finishLine: state.track.finishLine,
+          }),
+        });
+      }
+
+      btnConnect.onclick = async () => {
+        await connectBackend();
+      };
+      btnTrain.onclick = async () => {
+        if (!state.backend.backendSessionId) await connectBackend();
+        await uploadTrackToBackend();
+        if (!state.backend.backendSessionId) return;
+        await fetch(`${state.backend.baseUrl}/session/${state.backend.backendSessionId}/train/start`, { method: "POST" });
+        setMode(Modes.TRAIN);
+      };
+      btnStopTrain.onclick = async () => {
+        if (!state.backend.backendSessionId) return;
+        await fetch(`${state.backend.baseUrl}/session/${state.backend.backendSessionId}/train/stop`, { method: "POST" });
+      };
+
+      function commitStroke() {
+        if (state.track.centerline.length >= 2) {
+          ensureDefaultStartFinish();
+          saveTrack();
+        } else {
+          saveTrack();
+        }
+        rebuildWalls();
+        if (state.track.centerline.length >= 2 && playerBody && ghostBody) spawnCarsOnTrack();
+      }
+
+      canvas.addEventListener("pointerdown", (e) => {
+        if (mode !== Modes.DRAW) return;
+        canvas.setPointerCapture(e.pointerId);
+        if (state.draw.placingLine) {
+          state.draw.placeA = toCanvasPoint(e);
+          state.draw.drawing = false;
+          return;
+        }
+        state.draw.drawing = true;
+        state.draw.lastPt = toCanvasPoint(e);
+        if (state.track.centerline.length === 0) state.track.centerline.push(state.draw.lastPt);
+      });
+
+      canvas.addEventListener("pointermove", (e) => {
+        if (mode !== Modes.DRAW) return;
+        if (state.draw.placingLine) return;
+        if (!state.draw.drawing) return;
+        const p = toCanvasPoint(e);
+        const last = state.track.centerline[state.track.centerline.length - 1];
+        if (!last || dist2(last, p) > 9 * 9) {
+          state.track.centerline.push(p);
+          state.draw.lastPt = p;
+          saveTrack();
+        }
+      });
+
+      canvas.addEventListener("pointerup", (e) => {
+        if (mode !== Modes.DRAW) return;
+        if (state.draw.placingLine && state.draw.placeA) {
+          const b = toCanvasPoint(e);
+          const line = [state.draw.placeA, b];
+          if (state.draw.placingLine === "start") state.track.startLine = line;
+          if (state.draw.placingLine === "finish") state.track.finishLine = line;
+          state.draw.placingLine = null;
+          state.draw.placeA = null;
+          saveTrack();
+          rebuildWalls();
+          if (playerBody && ghostBody) spawnCarsOnTrack();
+          uploadTrackToBackend();
+          return;
+        }
+        if (!state.draw.drawing) return;
+        state.draw.drawing = false;
+        state.draw.lastPt = null;
+        commitStroke();
+      });
+
+      // Keyboard controls (player)
+      const keys = new Set();
+      window.addEventListener("keydown", (e) => keys.add(e.key.toLowerCase()));
+      window.addEventListener("keyup", (e) => keys.delete(e.key.toLowerCase()));
+
+      // Physics world
+      let world = null;
+      let wallBodies = [];
+      let playerBody = null;
+      let ghostBody = null;
+      let lastImpact = 0;
+
+      function destroyWalls() {
+        if (!world) return;
+        for (const b of wallBodies) world.destroyBody(b);
+        wallBodies = [];
+      }
+
+      function resetWorld() {
+        world = new pl.World(pl.Vec2(0, 0));
+        destroyWalls();
+        rebuildWalls();
+        state.game.health = 100;
+        state.game.gameover = false;
+        state.game.blast = [];
+        overlayEl.style.display = "none";
+
+        playerBody = world.createDynamicBody({
+          position: pl.Vec2(2, 2),
+          angularDamping: 3.0,
+          linearDamping: 0.8,
+        });
+        playerBody.createFixture(pl.Box(0.45, 0.25), {
+          density: 1.0,
+          friction: 0.6,
+          restitution: 0.1,
+          userData: { kind: "car" },
+        });
+
+        ghostBody = world.createDynamicBody({
+          position: pl.Vec2(2, 2),
+          angularDamping: 5.0,
+          linearDamping: 1.5,
+        });
+        ghostBody.createFixture(pl.Box(0.42, 0.22), {
+          density: 0.6,
+          friction: 0.2,
+          restitution: 0.0,
+          userData: { kind: "ghost" },
+        });
+        ghostBody.setActive(false);
+
+        spawnCarsOnTrack();
+
+        world.on("post-solve", (contact, impulse) => {
+          const a = contact.getFixtureA().getBody();
+          const b = contact.getFixtureB().getBody();
+          const involvePlayer = a === playerBody || b === playerBody;
+          if (!involvePlayer) return;
+          const arr = impulse.normalImpulses || [];
+          const j = (arr[0] || 0) + (arr[1] || 0);
+          if (j <= 0.02) return;
+          lastImpact = j;
+          const dmg = Math.min(40, Math.max(0, (j - 0.05) * 180));
+          if (dmg > 0) applyDamage(dmg);
+        });
+      }
+
+      function applyDamage(dmg) {
+        if (state.game.gameover) return;
+        state.game.health = Math.max(0, state.game.health - dmg);
+        if (state.game.health <= 0) {
+          triggerGameOver();
+        }
+      }
+
+      function triggerGameOver() {
+        if (state.game.gameover) return;
+        state.game.gameover = true;
+        overlayTitleEl.textContent = "GAME OVER";
+        overlayHintEl.textContent = "Click Restart, or End session to clear everything.";
+        overlayEl.style.display = "grid";
+        if (!playerBody) return;
+        const p = playerBody.getPosition();
+        const x = p.x * pxPerMeter;
+        const y = p.y * pxPerMeter;
+        for (let i = 0; i < 90; i++) {
+          const a = Math.random() * Math.PI * 2;
+          const sp = 2 + Math.random() * 8;
+          state.game.blast.push({
+            x,
+            y,
+            vx: Math.cos(a) * sp,
+            vy: Math.sin(a) * sp,
+            life: 0.9 + Math.random() * 0.7,
+            r: 2 + Math.random() * 4,
+          });
+        }
+      }
+
+      resetWorld();
+
+      // Ghost baseline (centerline follower)
+      function ghostBaselineStep(dt) {
+        if (state.track.centerline.length < 2) return;
+        const pos = ghostBody.getPosition();
+        const x = pos.x * pxPerMeter;
+        const y = pos.y * pxPerMeter;
+
+        // Find nearest center point and look ahead.
+        let bestI = 0;
+        let bestD = Infinity;
+        for (let i = 0; i < state.track.centerline.length; i++) {
+          const p = state.track.centerline[i];
+          const d = (p[0] - x) ** 2 + (p[1] - y) ** 2;
+          if (d < bestD) {
+            bestD = d;
+            bestI = i;
+          }
+        }
+        const look = Math.min(state.track.centerline.length - 1, bestI + 14);
+        const tgt = state.track.centerline[look];
+        const dx = tgt[0] - x;
+        const dy = tgt[1] - y;
+        const angT = Math.atan2(dy, dx);
+        const ang = ghostBody.getAngle();
+        let err = angT - ang;
+        while (err > Math.PI) err -= Math.PI * 2;
+        while (err < -Math.PI) err += Math.PI * 2;
+        const steer = Math.max(-1, Math.min(1, err * 1.6));
+        const throttle = 0.85;
+
+        const fwd = pl.Vec2(Math.cos(ang), Math.sin(ang));
+        ghostBody.applyForceToCenter(fwd.mul(9 * throttle), true);
+        ghostBody.applyTorque(8 * steer, true);
+      }
+
+      // Raycast sensors using planck
+      function castRays(body, color) {
+        if (!world) return [];
+        const pos = body.getPosition();
+        const ang = body.getAngle();
+        const origin = pl.Vec2(pos.x, pos.y);
+        const rays = [];
+        const fov = (sensorFovDeg * Math.PI) / 180;
+        for (let i = 0; i < sensorN; i++) {
+          const t = i / (sensorN - 1);
+          const a = -fov / 2 + t * fov;
+          const dir = pl.Vec2(Math.cos(ang + a), Math.sin(ang + a));
+          const p2 = origin.clone().add(dir.clone().mul(maxRay / pxPerMeter));
+          let bestFrac = 1;
+          world.rayCast(origin, p2, (fixture, point, normal, fraction) => {
+            bestFrac = Math.min(bestFrac, fraction);
+            return fraction;
+          });
+          const hit = origin.clone().add(dir.clone().mul((maxRay / pxPerMeter) * bestFrac));
+          rays.push({ hit, frac: bestFrac });
+        }
+        // Draw
+        ctx.save();
+        ctx.globalAlpha = 0.85;
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 1.5;
+        for (const r of rays) {
+          ctx.beginPath();
+          ctx.moveTo(origin.x * pxPerMeter, origin.y * pxPerMeter);
+          ctx.lineTo(r.hit.x * pxPerMeter, r.hit.y * pxPerMeter);
+          ctx.stroke();
+        }
+        ctx.restore();
+        return rays.map((r) => r.frac);
+      }
+
+      function renderCar(body, fill, stroke) {
+        const pos = body.getPosition();
+        const ang = body.getAngle();
+        const x = pos.x * pxPerMeter;
+        const y = pos.y * pxPerMeter;
+        ctx.save();
+        ctx.translate(x, y);
+        ctx.rotate(ang);
+        ctx.fillStyle = fill;
+        ctx.strokeStyle = stroke;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.roundRect(-0.45 * pxPerMeter, -0.25 * pxPerMeter, 0.9 * pxPerMeter, 0.5 * pxPerMeter, 6);
+        ctx.fill();
+        ctx.globalAlpha = 0.9;
+        ctx.stroke();
+        // nose
+        ctx.fillStyle = "rgba(255,255,255,0.75)";
+        ctx.beginPath();
+        ctx.arc(0.32 * pxPerMeter, 0, 2.2, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+      }
+
+      function renderBlast(dt) {
+        if (!state.game.blast.length) return;
+        const next = [];
+        for (const p of state.game.blast) {
+          p.life -= dt;
+          if (p.life <= 0) continue;
+          p.vx *= 0.985;
+          p.vy *= 0.985;
+          p.x += p.vx * 60 * dt;
+          p.y += p.vy * 60 * dt;
+          next.push(p);
+
+          ctx.save();
+          const a = Math.max(0, Math.min(1, p.life));
+          ctx.globalAlpha = a;
+          ctx.fillStyle = `rgba(255,${Math.floor(80 + 120 * a)},120,${a})`;
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.restore();
+        }
+        state.game.blast = next;
+      }
+
+      function renderHUD() {
+        const ready = state.backend.status === "ready";
+        const statusPill = ready
+          ? `<span class="pill ok">Status: <b>ready</b></span>`
+          : `<span class="pill warn">Status: <b>${state.backend.status}</b></span>`;
+
+        const epochTotal = state.backend.epochTotal ? `/${state.backend.epochTotal}` : "";
+        hudEl.innerHTML = `
+          <div class="row" style="justify-content: space-between">
+            ${statusPill}
+            <span class="pill">Mode: <b>${mode.replaceAll("_", " ")}</b></span>
+          </div>
+          <div class="row" style="justify-content: space-between">
+            <span>Generation: <b>${state.backend.generation}</b></span>
+            <span>Epoch: <b>${state.backend.epoch}${epochTotal}</b></span>
+            <span>Timesteps: <b>${state.backend.timesteps}</b></span>
+          </div>
+          <div class="row" style="justify-content: space-between">
+            <span>avgReturn: <b>${state.backend.avgReturn.toFixed(2)}</b></span>
+            <span>successRate: <b>${(state.backend.successRate * 100).toFixed(0)}%</b></span>
+            <span>Impact: <b>${lastImpact.toFixed(2)}</b></span>
+          </div>
+          <div class="healthbar"><div style="transform: scaleX(${state.game.health / 100})"></div></div>
+          <div style="opacity:.85">
+            <b>Controls</b>: WASD/Arrows drive. In Draw: drag to sketch. Click “Start training” to see live sim.
+          </div>
+        `;
+      }
+
+      function stepPlayer(dt) {
+        if (state.game.gameover) return;
+        const ang = playerBody.getAngle();
+        const forward = pl.Vec2(Math.cos(ang), Math.sin(ang));
+        let throttle = 0;
+        let steer = 0;
+        const up = keys.has("w") || keys.has("arrowup");
+        const down = keys.has("s") || keys.has("arrowdown");
+        const left = keys.has("a") || keys.has("arrowleft");
+        const right = keys.has("d") || keys.has("arrowright");
+        if (up) throttle += 1;
+        if (down) throttle -= 0.6;
+        if (left) steer -= 1;
+        if (right) steer += 1;
+
+        if (mode === Modes.DRIVE_RANDOM) {
+          throttle = 0.6 + 0.4 * Math.sin(performance.now() / 500);
+          steer = Math.sin(performance.now() / 350);
+        }
+
+        playerBody.applyForceToCenter(forward.mul(14 * throttle), true);
+        playerBody.applyTorque(10 * steer, true);
+
+        // approximate lateral friction
+        const vel = playerBody.getLinearVelocity();
+        const rightVec = pl.Vec2(-forward.y, forward.x);
+        const lat = rightVec.mul(pl.Vec2.dot(vel, rightVec));
+        playerBody.applyForceToCenter(lat.mul(-10), true);
+      }
+
+      function updateGhostFromBackend() {
+        if (!state.backend.simBuffer.length) return false;
+        // target a small delay to allow interpolation buffer
+        const delayMs = 120;
+        const target = Date.now() - delayMs;
+        let i = 0;
+        while (i + 1 < state.backend.simBuffer.length && state.backend.simBuffer[i + 1].ts < target) i++;
+        const a = state.backend.simBuffer[i];
+        const b = state.backend.simBuffer[Math.min(state.backend.simBuffer.length - 1, i + 1)];
+        if (!a || !b) return false;
+        const span = Math.max(1, b.ts - a.ts);
+        const t = Math.max(0, Math.min(1, (target - a.ts) / span));
+        const x = a.x + (b.x - a.x) * t;
+        const y = a.y + (b.y - a.y) * t;
+        const heading = a.heading + (b.heading - a.heading) * t;
+        ghostBody.setActive(false);
+        ghostBody.setTransform(pl.Vec2(x / pxPerMeter, y / pxPerMeter), heading);
+        ghostBody.setLinearVelocity(pl.Vec2(0, 0));
+        ghostBody.setAngularVelocity(0);
+        return { msg: a, x, y, heading };
+      }
+
+      // Main loop
+      let last = performance.now();
+      let acc = 0;
+      const fixedDt = 1 / 60;
+
+      function frame(now) {
+        const dt = Math.min(0.05, (now - last) / 1000);
+        last = now;
+        acc += dt;
+
+        // physics step
+        while (acc >= fixedDt) {
+          if (world && !state.game.gameover) {
+            stepPlayer(fixedDt);
+            if (mode === Modes.RACE && !state.backend.connected) {
+              ghostBody.setActive(true);
+              ghostBaselineStep(fixedDt);
+            } else {
+              ghostBody.setActive(false);
+            }
+            world.step(fixedDt);
+          }
+          acc -= fixedDt;
+        }
+
+        // render
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        // subtle grid
+        ctx.save();
+        ctx.globalAlpha = 0.12;
+        ctx.strokeStyle = "#1f2b44";
+        ctx.lineWidth = 1;
+        for (let x = 0; x <= canvas.width; x += 64) {
+          ctx.beginPath();
+          ctx.moveTo(x, 0);
+          ctx.lineTo(x, canvas.height);
+          ctx.stroke();
+        }
+        for (let y = 0; y <= canvas.height; y += 64) {
+          ctx.beginPath();
+          ctx.moveTo(0, y);
+          ctx.lineTo(canvas.width, y);
+          ctx.stroke();
+        }
+        ctx.restore();
+
+        drawTrack();
+
+        let ghostInfo = null;
+        if (mode === Modes.TRAIN && state.backend.connected) {
+          ghostInfo = updateGhostFromBackend();
+        }
+
+        // Cars
+        if (playerBody) {
+          renderCar(playerBody, "rgba(106,166,255,0.95)", "rgba(255,255,255,0.32)");
+        }
+        const showGhostTrainGhost =
+          mode === Modes.TRAIN && state.backend.connected && ghostBody && ghostInfo;
+        const showGhostRaceBaseline =
+          mode === Modes.RACE && !state.backend.connected && ghostBody && ghostBody.isActive();
+        if (ghostBody && (showGhostTrainGhost || showGhostRaceBaseline)) {
+          renderCar(ghostBody, "rgba(45,212,191,0.90)", "rgba(255,255,255,0.25)");
+          if (mode === Modes.TRAIN) {
+            const m = ghostInfo?.msg;
+            if (m && Array.isArray(m.rays)) {
+              drawBackendRays(m);
+            } else {
+              castRays(ghostBody, "rgba(45,212,191,0.42)");
+            }
+          }
+        }
+
+        renderBlast(dt);
+        renderHUD();
+
+        requestAnimationFrame(frame);
+      }
+
+      function drawBackendRays(msg) {
+        const rays = msg.rays;
+        const x = msg.x;
+        const y = msg.y;
+        const heading = msg.heading;
+        const maxR = msg.maxRay || maxRay;
+        const fov = ((msg.sensorFovDeg || sensorFovDeg) * Math.PI) / 180;
+        ctx.save();
+        ctx.globalAlpha = 0.75;
+        ctx.strokeStyle = "rgba(45,212,191,0.55)";
+        ctx.lineWidth = 1.5;
+        for (let i = 0; i < rays.length; i++) {
+          const t = rays.length === 1 ? 0.5 : i / (rays.length - 1);
+          const a = -fov / 2 + t * fov;
+          const ang = heading + a;
+          const dx = Math.cos(ang);
+          const dy = Math.sin(ang);
+          const dist = (rays[i] ?? 1) * maxR;
+          ctx.beginPath();
+          ctx.moveTo(x, y);
+          ctx.lineTo(x + dx * dist, y + dy * dist);
+          ctx.stroke();
+        }
+        ctx.restore();
+      }
+
+      requestAnimationFrame(frame);
+
+      window.addEventListener("keydown", (e) => {
+        if (e.key === "1") {
+          setMode(Modes.DRAW);
+          state.draw.placingLine = "start";
+          state.draw.placeA = null;
+        }
+        if (e.key === "2") {
+          setMode(Modes.DRAW);
+          state.draw.placingLine = "finish";
+          state.draw.placeA = null;
+        }
+      });
+    </script>
+  </body>
+</html>
+
