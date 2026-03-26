@@ -550,3 +550,63 @@ Separate real app errors from extension noise and keep console actionable.
 - **Spawn heading** aligned with first centerline segment.
 - **Reward:** arc-length progress term + small backward penalty; **finish line** segment crossing gives large bonus and episode reset; success metric includes **lap finished**.
 - **Observation:** normalized **progress** along track (`obs_dim` 15).
+
+---
+
+## Plan addendum — Player car “not moving” + poor training quality
+
+### PM — scope & acceptance criteria
+
+**A) Car not moving**
+
+- **Scope:** User reports the **player car** does not move (again / regression).
+- **Acceptance:** In **Practise** and **Race**, with a valid track and **not** game-over, the car responds to **arrow keys** (or **Auto demo** in Practise when enabled). **HUD** makes mode expectations obvious (especially **Train** = ghost only, player frozen by design).
+
+**B) Training quality**
+
+- **Scope:** Backend RL still feels weak / unstable despite reward shaping.
+- **Acceptance:** Measurable improvement in **success rate** and **smoother ghost** over time on typical drawn tracks; no empty-buffer crashes; training loop uses **return-based** targets (not single-step reward as value target) or equivalent fix; document remaining **sim vs Planck** gap.
+
+### Architect — root causes & implementation sequence
+
+**A) Car not moving — likely causes (from `index.html`)**
+
+| Cause | Evidence / fix |
+|--------|----------------|
+| **Wrong mode** | `stepPlayer` only runs when `mode === PRACTISE \|\| RACE`. In **Train**, player is **inactive** and controls are skipped — user may expect to drive. **Fix:** HUD copy + optional banner: “Driving: Practise / Race only.” |
+| **GAME OVER** | Main physics block requires `!state.game.gameover`; `stepPlayer` also bails. **Fix:** Confirm **Restart** clears `gameover`; ensure overlay cannot leave stale state. |
+| **Practise, Auto demo off, no keys** | Throttle stays ~0; damping dominates → feels stuck. **Fix:** Short hint “Hold ↑ to accelerate”; optional tiny **idle forward** only if product agrees. |
+| **Missing guard** | `stepPlayer` uses `playerBody` without null-check — rare crash vs silent fail. **Fix:** `if (!playerBody \|\| !playerBody.isActive()) return;` at top. |
+| **Focus** | Keys on `window` — if focus is wrong, no input. **Fix:** optional `tabindex` on `canvas` + `focus()` on click (low risk). |
+
+**Order (frontend):** (1) Guard + active check in `stepPlayer`. (2) Clarify HUD when mode is Train vs Practise. (3) Optional canvas focus on pointerdown. (4) Optional idle throttle — only if still needed.
+
+**B) Training quality — root causes (from `apps/api/main.py`)**
+
+| Issue | Why it hurts |
+|--------|----------------|
+| **Value target = one-step `r`** | `value_loss` compares `V(s)` to **instantaneous reward**, not **return** — wrong supervision; critic cannot learn useful baseline. |
+| **“PPO” is BC on noisy actions** | `pred = tanh(mu)` vs stored actions + wrong advantage — not a valid policy-gradient update. |
+| **Kinematic ≠ Planck** | Policy optimizes toy dynamics; ghost overlay will not match real race feel until sim aligned or training moved client-side. |
+
+**Order (backend):** (1) **Compute discounted returns** `R_t` along each rollout segment (handle early `break` on death); set `value_loss` toward **returns** (or **n-step**). (2) Replace or augment policy loss with **REINFORCE-style** `-log_std_term * advantage` **or** **weighted regression** `advantage * (a - tanh(mu))^2` with **proper** `adv` from **returns − V**. (3) Tune: **lr**, **entropy coef**, **rollout length**, **grad clip**. (4) **Optional phase 2:** swap GRU for **MLP** policy + value for stability; re-add GRU later. (5) Long-term: **shared Planck stepping** (heavy) or **worker** sim — out of scope for this batch unless timeboxed.
+
+### Devil’s advocate — risks
+
+- **Idle throttle** can mask UX bugs and feel “drifty” — default off or very small.
+- **Return computation** must handle variable-length rollouts (death mid-rollout, finish `continue`).
+- **Overfitting** to kinematic sim — document that **Race** quality may still differ until physics match.
+
+### Verdict
+
+**CONCERN** — Split work: **frontend** clarity + guards for “not moving”; **backend** return-based learning + policy loss fix before chasing reward tweaks. **APPROVE** phased plan above.
+
+### Verification
+
+- **Car:** Practise + ↑ moves car; Train shows clear “ghost training” messaging; no throw when toggling modes rapidly.
+- **Train:** Loss decreases or success_rate trends up on a fixed seed/track; no crash on short rollout buffer; manual smoke: uvicorn + Start training.
+
+### Status (implemented in `/develop` — car HUD + training returns)
+
+- **`index.html`:** `stepPlayer` guards **`playerBody` + `isActive()`**; canvas **`tabindex`** + **focus** on pointerdown; **HUD** mode-specific hints (Train = parked / ghost only, Practise = hold ↑, etc.).
+- **`apps/api/main.py`:** `_discounted_returns` (γ=0.99, segment boundaries on lap finish); **value loss** vs **returns**; **policy loss** REINFORCE Gaussian log-prob; **entropy** coef 0.01; lr **2.5e-4**; **empty buffer** skip.

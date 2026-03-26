@@ -140,6 +140,28 @@ def _segments_intersect(
     return ccw(a1, b1, b2) != ccw(a2, b1, b2) and ccw(a1, a2, b1) != ccw(a1, a2, b2)
 
 
+def _discounted_returns(rewards: List[float], gamma: float, segment_starts: List[int]) -> np.ndarray:
+    """Monte Carlo returns per segment (resets on lap finish split segments)."""
+    n = len(rewards)
+    R = np.zeros(n, dtype=np.float64)
+    if n == 0:
+        return R
+    r = np.array(rewards, dtype=np.float64)
+    ss = sorted(set(segment_starts))
+    if not ss or ss[0] != 0:
+        ss = [0] + [x for x in ss if x > 0]
+    ss = ss + [n]
+    for seg in range(len(ss) - 1):
+        s, e = ss[seg], ss[seg + 1]
+        if s >= e:
+            continue
+        G = 0.0
+        for t in range(e - 1, s - 1, -1):
+            G = r[t] + gamma * G
+            R[t] = G
+    return R
+
+
 def raycast_to_segments(
     origin: Tuple[float, float], direction: Tuple[float, float], segs: List[Tuple[float, float, float, float]], max_dist: float
 ) -> float:
@@ -408,7 +430,8 @@ async def _train_loop(sess: Session) -> None:
     max_ray = 120.0
     obs_dim = sensor_n + 4  # rays + speed + heading_err + health + progress_along [0,1]
     policy = GRUPolicy(obs_dim=obs_dim, hidden_dim=64)
-    optim = torch.optim.Adam(policy.parameters(), lr=2e-4)
+    optim = torch.optim.Adam(policy.parameters(), lr=2.5e-4)
+    gamma = 0.99
 
     ppo_epochs = 3
     rollout_steps = 320
@@ -468,6 +491,7 @@ async def _train_loop(sess: Session) -> None:
         val_buf = []
         done_buf = []
         h_buf = []
+        seg_starts: List[int] = [0]
 
         for t in range(rollout_steps):
             sess.train.timesteps += 1
@@ -551,6 +575,7 @@ async def _train_loop(sess: Session) -> None:
                     val_buf.append(float(v.item()))
                     done_buf.append(1.0 if health <= 0 else 0.0)
                     h_buf.append(None)
+                    seg_starts.append(len(obs_buf))
                     reset_episode()
                     continue
 
@@ -600,13 +625,18 @@ async def _train_loop(sess: Session) -> None:
         sess.train.avg_return = float(np.mean(returns_window)) if returns_window else gen_return
         sess.train.success_rate = float(np.mean(success_window)) if success_window else success
 
-        # PPO-ish update (lightweight, keeps "epoch/generation" semantics real)
+        if len(obs_buf) == 0:
+            if health <= 0:
+                reset_episode()
+            await asyncio.sleep(0)
+            continue
+
+        ret_np = _discounted_returns(rew_buf, gamma, seg_starts)
+        ret_arr = torch.tensor(ret_np, dtype=torch.float32)
         obs_arr = torch.tensor(np.array(obs_buf, dtype=np.float32))
         act_arr = torch.tensor(np.array(act_buf, dtype=np.float32))
-        rew_arr = torch.tensor(np.array(rew_buf, dtype=np.float32))
         val_arr = torch.tensor(np.array(val_buf, dtype=np.float32))
-        # Advantage = reward - value (not true GAE, but stable enough for a demo)
-        adv = (rew_arr - val_arr).detach()
+        adv = ret_arr - val_arr.detach()
         adv = (adv - adv.mean()) / (adv.std(unbiased=False) + 1e-6)
 
         for e in range(1, ppo_epochs + 1):
@@ -628,14 +658,14 @@ async def _train_loop(sess: Session) -> None:
             logstd_t = torch.stack(logstd_list, dim=0)
             std_t = torch.exp(logstd_t)
 
-            # Gaussian logprob of tanh-squashed action is non-trivial; for MVP we approximate in pre-tanh space.
-            # This is *not* correct PPO, but gives a meaningful optimization signal.
-            # Target: keep actions small when near walls.
-            pred = torch.tanh(mu_t)
-            policy_loss = ((pred - act_arr) ** 2).mean() * 0.35
-            value_loss = ((torch.stack(v_list) - rew_arr) ** 2).mean() * 0.1
+            # REINFORCE-style: Gaussian log-prob in pre-tanh space; actions stored are tanh(z).
+            z = torch.atanh(torch.clamp(act_arr, -0.999999, 0.999999))
+            logp_dim = -0.5 * ((z - mu_t) ** 2) / (std_t**2 + 1e-8) - torch.log(std_t + 1e-8) - 0.5 * math.log(2 * math.pi)
+            logp = logp_dim.sum(dim=-1)
+            policy_loss = -(adv * logp).mean()
+            value_loss = ((torch.stack(v_list) - ret_arr) ** 2).mean() * 0.25
             entropy = (0.5 + 0.5 * math.log(2 * math.pi) + torch.log(std_t)).mean()
-            loss = policy_loss + value_loss - 0.001 * entropy
+            loss = policy_loss + value_loss - 0.01 * entropy
 
             optim.zero_grad()
             loss.backward()

@@ -22,10 +22,12 @@ Detected / agreed patterns (workspace was bootstrapped empty; update as the repo
 - **Practise** mode: default **arrow keys**; optional **Auto demo (AI steering)** (`#chkAutoDemo`, `state.practise.autoDemo`) uses soft bounded sin steering—disabled outside Practise. Player body is physics-active only in **Practise** and **Race**; inactive in **Draw** and **Train**.
 - **`setMode`**: call **`spawnCarsOnTrack()`** only when the mode **value** changes (`prev !== next`), not on redundant clicks; track edits still spawn via **`commitStroke`** / line placement / **`resetWorld`** / **`restartGame`**.
 - **`uploadTrackToBackend()`**: returns boolean; failures **`logWarn`** (no throw); callers tolerate offline backend.
+- **Canvas** `tabindex="0"`; **pointerdown** focuses canvas so **arrow keys** work after click. **HUD** shows mode-specific drive hint (Train = ghost only, Practise = hold ↑, etc.). **`stepPlayer`**: guard **`playerBody`** and **`isActive()`**.
 
 ## Backend training (`apps/api/main.py`)
 
 - Kinematic sim (not Planck). Reward uses **closest-point centerline tangent**, **arc-length progress** (`ds`), optional **FINISH line crossing** (+large bonus), spawn **heading along first segment**. Observation includes **normalized progress** along the polyline.
+- **Returns:** **discounted Monte Carlo returns** per rollout segment (`_discounted_returns`; lap finish splits segments). **Critic** fits **returns**, not one-step `r`. **Policy:** **REINFORCE**-style loss `-(adv * log π(a|s))` with diagonal Gaussian in pre-tanh space; **advantage** = normalized `return − V`. Still not Planck-matched.
 
 ## TypeScript / React
 

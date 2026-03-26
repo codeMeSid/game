@@ -247,7 +247,7 @@
   </head>
   <body>
     <div class="wrap">
-      <canvas id="c" width="1280" height="720"></canvas>
+      <canvas id="c" width="1280" height="720" tabindex="0" title="Click to focus — arrow keys drive in Practise/Race"></canvas>
       <div class="ui">
         <div class="panel">
           <div class="panel-head">
@@ -925,6 +925,11 @@
       }
 
       canvas.addEventListener("pointerdown", (e) => {
+        try {
+          canvas.focus({ preventScroll: true });
+        } catch (_) {
+          canvas.focus();
+        }
         if (mode !== Modes.DRAW) return;
         canvas.setPointerCapture(e.pointerId);
         if (state.draw.placingLine) {
@@ -1234,8 +1239,17 @@
 
         const speedLine =
           mode === Modes.TRAIN
-            ? `<div class="row" style="justify-content:space-between;margin-top:4px"><span><b>Ghost</b> ${ghostKmh.toFixed(0)} km/h</span><span style="opacity:.8">You: hidden</span></div>`
+            ? `<div class="row" style="justify-content:space-between;margin-top:4px"><span><b>Ghost</b> ${ghostKmh.toFixed(0)} km/h</span><span style="opacity:.8">You: parked (Train)</span></div>`
             : `<div class="row" style="justify-content:space-between;margin-top:4px"><span><b>You</b> ${playerKmh.toFixed(0)} km/h</span><span><b>Ghost</b> ${ghostKmh.toFixed(0)} km/h</span></div>`;
+
+        const driveHint =
+          mode === Modes.TRAIN
+            ? "<b>Train</b>: backend ghost learns here — your car is off. Use <b>Practise</b> or <b>Race</b> to drive."
+            : mode === Modes.PRACTISE
+              ? "<b>Practise</b>: hold <b>↑</b> to accelerate (or enable Auto demo). Click canvas if keys do nothing."
+              : mode === Modes.RACE
+                ? "<b>Race</b>: <b>↑↓←→</b> — click canvas to focus for keys."
+                : "<b>Draw</b>: drag to lay track; set START/FINISH, then Practise.";
 
         hudEl.innerHTML = `
           <div class="row" style="justify-content: space-between">
@@ -1245,7 +1259,7 @@
           ${trainBlock}
           <div class="healthbar" style="margin-top:6px"><div style="transform: scaleX(${state.game.health / 100})"></div></div>
           <div style="opacity:.85;margin-top:4px;font-size:9px">
-            <b>Practise</b>: arrows (optional Auto demo). <b>Draw</b>: drag track. <b>Train</b>: Start/Stop toggles backend ghost.
+            ${driveHint}
           </div>
         `;
       }
@@ -1253,6 +1267,7 @@
       function stepPlayer(dt) {
         if (state.game.gameover) return;
         if (mode !== Modes.PRACTISE && mode !== Modes.RACE) return;
+        if (!playerBody || !playerBody.isActive()) return;
         const ang = playerBody.getAngle();
         const forward = pl.Vec2(Math.cos(ang), Math.sin(ang));
         let throttleTarget = 0;

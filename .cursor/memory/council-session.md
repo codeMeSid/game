@@ -855,3 +855,65 @@ Topic: Practise flicker / spin, random crashes, and two console errors
 **QA:** No Vitest in repo; manual verification: Practise default manual, optional auto demo, no spawn flicker on double-clicking same mode tab.
 
 **Outcome:** Implemented in `index.html`; `progress.md` / `patterns.md` updated.
+
+---
+
+## `/develop` completion — car not moving + training quality (2026-03-26)
+
+**Senior Dev Reviewer:** Frontend guards and focus match `patterns.md`. Backend returns segmented on lap; REINFORCE uses same `adv` across PPO epochs; empty-buffer guard.
+
+**Security & Perf:** No new attack surface; training math unchanged order of magnitude.
+
+**Integration:** Train mode unchanged (player inactive); Practise/Race unchanged.
+
+**QA:** `py_compile` on `main.py`; manual smoke recommended.
+
+---
+
+## `/plan` — Car not moving + training quality (2026-03-26)
+
+### PM Agent
+
+- **Scope:** (1) Player car appears not to move. (2) Training quality still poor.
+- **Acceptance:** Driving works in **Practise/Race** with clear UX; training improves via **correct RL targets** (returns / advantage), not only reward shaping.
+
+### Architect Agent
+
+- **Car:** `stepPlayer` is gated by **mode** (not Train) and **gameover**; physics loop also skips when gameover. **Train** intentionally **deactivates** the player — likely user confusion. Add **guards** on `playerBody`, **HUD** clarity, optional **canvas focus**.
+- **Training:** Value net is trained against **per-step reward** instead of **returns**; “PPO” is effectively **behavior cloning** on sampled actions. Fix **discounted returns**, **advantage = R − V**, then **policy gradient** or consistent supervised step on **advantage-weighted** errors.
+
+### Devil’s Advocate
+
+- Do not add **idle throttle** without confirming it does not break “parked” feel.
+- **Return** math must handle **early episode end** and **finish-line `continue`** branches.
+- **Sim mismatch** remains a ceiling until Planck-aligned training or in-browser RL.
+
+### Verdict
+
+**CONCERN** — **APPROVE** split **frontend** / **backend** plan recorded in **`.cursor/memory/progress.md`** (addendum **Player car “not moving” + poor training quality**).
+
+---
+
+## `/plan` — Backend pill “always offline” (2026-03-26)
+
+### PM Agent
+
+- **Scope:** Users report the backend pill **always shows offline** while developing with the API running.
+- **Acceptance:** Distinguish **API unreachable** vs **API up but no training session**; **WebSocket URL** must match `baseUrl`; optional **accurate** `connected` only after WS `open`.
+- **Impact:** Less confusion during local dev; clearer when to start uvicorn vs when training failed.
+
+### Architect Agent
+
+- **Root cause:** `updateBackendPill()` treats **offline** as `!connected && !backendSessionId`. Nothing sets **`connected`** until **Start training** opens a session + WS — so the UI stays **offline** even when FastAPI is healthy.
+- **Secondary bug:** WebSocket uses **hardcoded** `ws://localhost:8000/...` while REST uses **`state.backend.baseUrl`** — port/host drift breaks training.
+- **Fix:** `GET /health` + periodic **`fetch`** → **`apiReachable`**; extend pill states; **derive WS URL** from `baseUrl`.
+
+### Devil’s Advocate
+
+- Health-only “online” can mislead if **WS** is blocked; training flow still the source of truth.
+- **CORS** must include every dev origin; **interval** polling should be modest.
+- **Precedence** in `updateBackendPill` must be tested so **training** still wins over **idle**.
+
+### Verdict
+
+**CONCERN** — Approved with mitigations above. Plan written to **`.cursor/memory/progress.md`** (addendum **Backend pill “always offline”**).
