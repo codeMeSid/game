@@ -489,3 +489,64 @@ Separate real app errors from extension noise and keep console actionable.
 - **`setMode`**: **`spawnCarsOnTrack()`** only when `prev !== next` (avoids flicker on repeat mode clicks).
 - **`uploadTrackToBackend()`**: try/catch, **`logWarn`**, returns boolean; no unhandled rejections from failed uploads.
 - HUD hint updated for Practise / Train.
+
+---
+
+## Plan addendum — Backend pill “always offline”
+
+### PM — scope & acceptance criteria
+
+**Problem:** The status pill shows **Backend: offline** even when the FastAPI server is running, because **offline** today means “no WebSocket session yet” (`!connected && !backendSessionId`), not “API unreachable.”
+
+**Goal:** Users can tell at a glance whether the **Python API is reachable** vs **disconnected / training**.
+
+**Acceptance criteria**
+
+1. With **uvicorn** running on the configured `baseUrl`, the pill shows something other than **offline** (e.g. **online** / **idle**) **before** the user clicks **Start training**, once a health check succeeds.
+2. With **no server** on `baseUrl`, the pill shows **offline** (or **unreachable**) after the health check fails.
+3. **Start training** still transitions to **connected** / **training** as today; WebSocket URL stays aligned with **`state.backend.baseUrl`** (no hardcoded host/port mismatch).
+4. **CORS:** `GET /health` works from the same origins already used for `POST /session` (extend `allow_origins` if a new dev origin appears, e.g. another port).
+
+### Architect — design & file changes
+
+| Area | Change |
+|------|--------|
+| **`apps/api/main.py`** | Add **`GET /health`** returning a small JSON payload (e.g. `{"ok": true}`). Reuse existing **CORSMiddleware** (no extra middleware unless needed). |
+| **`index.html`** | Introduce **`state.backend.apiReachable`** (boolean), set by **`pingBackendHealth()`** (`fetch(`${baseUrl}/health`)` with try/catch). Call **on load** and on an **interval** (e.g. 20–30s) and optionally **on `window.focus`** to recover after laptop sleep. |
+| **`index.html`** | Add **`httpBaseToWsUrl(base)`** (or inline): `http`→`ws`, `https`→`wss`, same host/port as `baseUrl`. Replace hardcoded `` `ws://localhost:8000/ws/...` `` with the derived URL. |
+| **`updateBackendPill()`** | New precedence: if **API unreachable** and no session → **offline**; if **API reachable** but no **session/ws** → **online / idle** (copy TBD); keep **training**, **connected/ready**, **reconnect…** as today. |
+| **Optional (nice)** | Set **`connected = true`** only in **`ws.onopen`** (not immediately after `new WebSocket(...)`) so the pill does not briefly lie “connected” before the handshake fails. |
+
+**Implementation order**
+
+1. Backend `GET /health`.
+2. Frontend `httpBaseToWsUrl` + WebSocket construction.
+3. `pingBackendHealth` + `apiReachable` + pill logic.
+4. `ws.onopen` / connection flags (optional polish).
+5. Manual verify: server down, server up idle, start training, stop training.
+
+### Devil’s advocate — risks & mitigations
+
+| Risk | Mitigation |
+|------|------------|
+| **CORS** missing origin (e.g. new dev port) | Add origin to `allow_origins` or document `VITE_*` / query-string base URL later. |
+| **Health spam / battery** | Interval 30s+; pause or slow when tab hidden (`document.visibilityState`). |
+| **False “online”** if health is proxied but WS blocked | Rare; document that training still requires WS; pill can show **online** + **reconnect…** after failed train. |
+| **`[::1]` IPv6 hosts** | Add to CORS if needed. |
+
+### Verdict
+
+**CONCERN** — Main issue is **semantic** (offline = no WS) plus **hardcoded WS URL**; **APPROVE** plan with CORS vigilance and optional `onopen` fix.
+
+### Verification
+
+- Backend stopped → pill **offline** after ping.
+- Backend up, page idle → pill **not** stuck on **offline**.
+- Start training → **connected** / **training**; stop → returns to idle/reachable, not false offline.
+
+### Status (implemented — training signal upgrade, `apps/api/main.py`)
+
+- **Closest point on polyline** for tangent + arc-length `s` (replaces nearest-vertex heuristic).
+- **Spawn heading** aligned with first centerline segment.
+- **Reward:** arc-length progress term + small backward penalty; **finish line** segment crossing gives large bonus and episode reset; success metric includes **lap finished**.
+- **Observation:** normalized **progress** along track (`obs_dim` 15).

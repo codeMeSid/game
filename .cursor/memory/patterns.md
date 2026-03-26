@@ -23,6 +23,10 @@ Detected / agreed patterns (workspace was bootstrapped empty; update as the repo
 - **`setMode`**: call **`spawnCarsOnTrack()`** only when the mode **value** changes (`prev !== next`), not on redundant clicks; track edits still spawn via **`commitStroke`** / line placement / **`resetWorld`** / **`restartGame`**.
 - **`uploadTrackToBackend()`**: returns boolean; failures **`logWarn`** (no throw); callers tolerate offline backend.
 
+## Backend training (`apps/api/main.py`)
+
+- Kinematic sim (not Planck). Reward uses **closest-point centerline tangent**, **arc-length progress** (`ds`), optional **FINISH line crossing** (+large bonus), spawn **heading along first segment**. Observation includes **normalized progress** along the polyline.
+
 ## TypeScript / React
 
 - Strict TypeScript; prefer explicit types at module boundaries.

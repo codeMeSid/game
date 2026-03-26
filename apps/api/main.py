@@ -84,6 +84,62 @@ def polyline_segments(points: List[Tuple[float, float]]) -> List[Tuple[float, fl
     return segs
 
 
+def _centerline_total_length(center: List[Tuple[float, float]]) -> float:
+    if len(center) < 2:
+        return 0.0
+    s = 0.0
+    for i in range(len(center) - 1):
+        ax, ay = center[i]
+        bx, by = center[i + 1]
+        s += math.hypot(bx - ax, by - ay)
+    return s
+
+
+def _centerline_project(center: List[Tuple[float, float]], px: float, py: float) -> Tuple[float, float, float]:
+    """
+    Closest point on polyline to (px, py): returns unit tangent (tx, ty) at that point
+    and arc-length `s` from center[0] along the polyline to the foot.
+    """
+    if len(center) < 2:
+        return (1.0, 0.0, 0.0)
+    best_d2: Optional[float] = None
+    best_tx, best_ty = 1.0, 0.0
+    best_s = 0.0
+    cum_start = 0.0
+    for i in range(len(center) - 1):
+        ax, ay = center[i]
+        bx, by = center[i + 1]
+        abx, aby = bx - ax, by - ay
+        seg_len2 = abx * abx + aby * aby
+        if seg_len2 < 1e-12:
+            cum_start += 0.0
+            continue
+        seg_len = math.sqrt(seg_len2)
+        axpx, aypy = px - ax, py - ay
+        u = _clamp((axpx * abx + aypy * aby) / seg_len2, 0.0, 1.0)
+        cx = ax + u * abx
+        cy = ay + u * aby
+        d2 = (px - cx) ** 2 + (py - cy) ** 2
+        if best_d2 is None or d2 < best_d2:
+            best_d2 = d2
+            best_tx, best_ty = _unit(abx, aby)
+            best_s = cum_start + u * seg_len
+        cum_start += seg_len
+    return (best_tx, best_ty, best_s)
+
+
+def _segments_intersect(
+    a1: Tuple[float, float],
+    a2: Tuple[float, float],
+    b1: Tuple[float, float],
+    b2: Tuple[float, float],
+) -> bool:
+    def ccw(p: Tuple[float, float], q: Tuple[float, float], r: Tuple[float, float]) -> bool:
+        return (r[1] - p[1]) * (q[0] - p[0]) > (q[1] - p[1]) * (r[0] - p[0])
+
+    return ccw(a1, b1, b2) != ccw(a2, b1, b2) and ccw(a1, a2, b1) != ccw(a1, a2, b2)
+
+
 def raycast_to_segments(
     origin: Tuple[float, float], direction: Tuple[float, float], segs: List[Tuple[float, float, float, float]], max_dist: float
 ) -> float:
@@ -336,31 +392,12 @@ async def ws_session(ws: WebSocket, session_id: str) -> None:
         await HUB.remove(session_id, ws)
 
 
-def _nearest_centerline_tangent(center: List[Tuple[float, float]], px: float, py: float) -> Tuple[float, float]:
-    if len(center) < 2:
-        return (1.0, 0.0)
-    best_i = 0
-    best_d = None
-    for i, (x, y) in enumerate(center):
-        d = (x - px) ** 2 + (y - py) ** 2
-        if best_d is None or d < best_d:
-            best_d = d
-            best_i = i
-    i2 = min(len(center) - 1, best_i + 1)
-    i1 = max(0, best_i - 1)
-    x1, y1 = center[i1]
-    x2, y2 = center[i2]
-    tx, ty = _unit(x2 - x1, y2 - y1)
-    if abs(tx) < 1e-9 and abs(ty) < 1e-9:
-        return (1.0, 0.0)
-    return (tx, ty)
-
-
 async def _train_loop(sess: Session) -> None:
     """
     MVP training loop:
     - Uses true GRU policy (RNN).
     - Runs a simple kinematic sim (not full physics) so it stays fast.
+    - Reward: arc-length progress along centerline + optional finish crossing; tangent from closest polyline point.
     - Streams live sim_state + metrics with epoch/generation semantics.
     """
 
@@ -369,16 +406,15 @@ async def _train_loop(sess: Session) -> None:
 
     sensor_n = 11
     max_ray = 120.0
-    obs_dim = sensor_n + 3  # rays + speed + heading_err + wall_proximity-ish
+    obs_dim = sensor_n + 4  # rays + speed + heading_err + health + progress_along [0,1]
     policy = GRUPolicy(obs_dim=obs_dim, hidden_dim=64)
     optim = torch.optim.Adam(policy.parameters(), lr=2e-4)
 
     ppo_epochs = 3
     rollout_steps = 320
 
-    # Simple success heuristic: reaching finish line isn't implemented yet (track may omit it),
-    # so we treat "survived full rollout without wall hit" as partial success.
-    ready_threshold = 0.65
+    # Success if a lap was completed this rollout, or survived with few wall hits.
+    ready_threshold = 0.55
 
     # Car state in "track space" (same coordinate system as frontend canvas).
     x, y = 320.0, 180.0
@@ -402,12 +438,16 @@ async def _train_loop(sess: Session) -> None:
     def reset_episode() -> None:
         nonlocal x, y, heading, speed, health, h
         sess.train.episode += 1
-        # Spawn near first center point if available.
-        if sess.track.center:
+        if len(sess.track.center) >= 2:
             x, y = sess.track.center[0]
+            x1, y1 = sess.track.center[1]
+            heading = math.atan2(y1 - y, x1 - x)
+        elif sess.track.center:
+            x, y = sess.track.center[0]
+            heading = 0.0
         else:
             x, y = 320.0, 180.0
-        heading = 0.0
+            heading = 0.0
         speed = 0.0
         health = 100.0
         h = None
@@ -416,9 +456,11 @@ async def _train_loop(sess: Session) -> None:
 
     # Simple buffers for PPO-ish loss (very lightweight, not production PPO).
     while not sess.stop_flag:
+        track_len = max(_centerline_total_length(sess.track.center), 1e-6)
         sess.train.generation += 1
         gen_return = 0.0
         wall_hits = 0
+        lap_finished = False
 
         obs_buf = []
         act_buf = []
@@ -429,6 +471,10 @@ async def _train_loop(sess: Session) -> None:
 
         for t in range(rollout_steps):
             sess.train.timesteps += 1
+
+            px, py = x, y
+            tx, ty, s_old = _centerline_project(sess.track.center, x, y)
+            prog = _clamp(s_old / track_len, 0.0, 1.0)
 
             # sensors
             rays = []
@@ -442,14 +488,13 @@ async def _train_loop(sess: Session) -> None:
             else:
                 rays = [1.0] * sensor_n
 
-            tx, ty = _nearest_centerline_tangent(sess.track.center, x, y)
             # heading error: dot/cross with tangent
             fx, fy = math.cos(heading), math.sin(heading)
             dot = _clamp(fx * tx + fy * ty, -1.0, 1.0)
             cross = fx * ty - fy * tx
             heading_err = math.atan2(cross, dot) / math.pi  # [-1,1]
 
-            obs = np.array(rays + [speed / 8.0, heading_err, health / 100.0], dtype=np.float32)
+            obs = np.array(rays + [speed / 8.0, heading_err, health / 100.0, prog], dtype=np.float32)
 
             obs_t = torch.from_numpy(obs).view(1, 1, -1)
             mu, log_std, v, hn = policy.forward(obs_t, h)
@@ -475,11 +520,40 @@ async def _train_loop(sess: Session) -> None:
                 dmg = (0.08 - near) * 150.0
                 health = max(0.0, health - dmg)
 
-            # Reward shaping: forward along tangent + stay away from walls.
-            forward = (fx * tx + fy * ty)
-            r = 0.35 * forward + 0.10 * (speed / 10.0) - (0.6 if hit else 0.0) - 0.04 * abs(steer)
+            _, _, s_new = _centerline_project(sess.track.center, x, y)
+            ds = max(0.0, s_new - s_old)
+            backward = max(0.0, s_old - s_new)
+
+            # Reward: forward alignment + arc-length progress + light speed / steer shaping
+            forward = fx * tx + fy * ty
+            r = (
+                0.2 * forward
+                + 0.18 * (ds / max(track_len * 0.01, 1.0))
+                + 0.05 * (speed / 10.0)
+                - 0.08 * backward
+                - (0.55 if hit else 0.0)
+                - 0.035 * abs(steer)
+            )
             if health <= 0:
                 r -= 1.0
+
+            fin = sess.track.finish
+            if fin and len(fin) == 2:
+                f0 = (float(fin[0][0]), float(fin[0][1]))
+                f1 = (float(fin[1][0]), float(fin[1][1]))
+                if _segments_intersect((px, py), (x, y), f0, f1):
+                    r += 10.0
+                    lap_finished = True
+                    gen_return += r
+                    obs_buf.append(obs)
+                    act_buf.append([throttle, steer])
+                    rew_buf.append(r)
+                    val_buf.append(float(v.item()))
+                    done_buf.append(1.0 if health <= 0 else 0.0)
+                    h_buf.append(None)
+                    reset_episode()
+                    continue
+
             gen_return += r
 
             obs_buf.append(obs)
@@ -514,7 +588,11 @@ async def _train_loop(sess: Session) -> None:
                 break
 
         # Compute readiness proxy
-        success = 1.0 if wall_hits < max(1, rollout_steps // 12) and health > 0 else 0.0
+        success = (
+            1.0
+            if lap_finished or (wall_hits < max(1, rollout_steps // 12) and health > 0)
+            else 0.0
+        )
         returns_window.append(gen_return)
         success_window.append(success)
         returns_window = returns_window[-40:]
