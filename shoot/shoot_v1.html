@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Pistol Gesture Shooter</title>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+    <style>
+        body { margin: 0; overflow: hidden; background: #111; font-family: sans-serif; }
+        canvas { display: block; }
+        #ui { position: absolute; top: 20px; left: 20px; color: white; pointer-events: none; }
+        #msg { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); color: #555; font-size: 1.2rem; }
+    </style>
+</head>
+<body>
+    <div id="ui">Score: <span id="score">0</span></div>
+    <div id="msg">Loading Camera & Hand Tracking...</div>
+    <canvas id="gameCanvas"></canvas>
+
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        const scoreEl = document.getElementById('score');
+        const msgEl = document.getElementById('msg');
+
+        let score = 0;
+        let discs = [];
+        let vfx = [];
+        let lastHand = null;
+        let isTriggerDown = false;
+        let canShoot = true;
+
+        canvas.width = window.innerWidth;
+        canvas.height = window.innerHeight;
+
+        // --- Game Logic ---
+        class Disc {
+            constructor() {
+                const side = Math.floor(Math.random() * 4);
+                if (side === 0) { this.x = -50; this.y = Math.random() * canvas.height; }
+                else if (side === 1) { this.x = canvas.width + 50; this.y = Math.random() * canvas.height; }
+                else if (side === 2) { this.x = Math.random() * canvas.width; this.y = -50; }
+                else { this.x = Math.random() * canvas.width; this.y = canvas.height + 50; }
+
+                this.targetX = canvas.width / 2;
+                this.targetY = canvas.height / 2;
+                this.speed = 1.5 + Math.random() * 2;
+                this.radius = 30;
+                
+                const angle = Math.atan2(this.targetY - this.y, this.targetX - this.x);
+                this.vx = Math.cos(angle) * this.speed;
+                this.vy = Math.sin(angle) * this.speed;
+            }
+
+            update() {
+                this.x += this.vx;
+                this.y += this.vy;
+            }
+
+            draw() {
+                ctx.beginPath();
+                ctx.arc(this.x, this.y, this.radius, 0, Math.PI * 2);
+                ctx.strokeStyle = '#0ff';
+                ctx.lineWidth = 3;
+                ctx.stroke();
+                ctx.fillStyle = 'rgba(0, 255, 255, 0.2)';
+                ctx.fill();
+            }
+        }
+
+        function spawnDiscs() {
+            while (discs.length < 4) {
+                discs.push(new Disc());
+            }
+        }
+
+        function triggerShoot(aimX, aimY) {
+            let hit = false;
+            // Magnetic Aim Assist: Check collision with a slightly larger radius
+            for (let i = discs.length - 1; i >= 0; i--) {
+                const d = discs[i];
+                const dist = Math.sqrt((aimX - d.x)**2 + (aimY - d.y)**2);
+                if (dist < d.radius + 25) { // Magnetic snap range
+                    discs.splice(i, 1);
+                    score += 10;
+                    scoreEl.innerText = score;
+                    vfx.push({x: d.x, y: d.y, text: "HIT", life: 1.0, color: "#0f0"});
+                    hit = true;
+                    break;
+                }
+            }
+            if (!hit) {
+                vfx.push({x: aimX, y: aimY, text: "MISS", life: 1.0, color: "#f00"});
+            }
+        }
+
+        // --- MediaPipe Setup ---
+        const hands = new Hands({
+            locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+        });
+
+        hands.setOptions({
+            maxNumHands: 1,
+            modelComplexity: 1,
+            minDetectionConfidence: 0.7,
+            minTrackingConfidence: 0.7
+        });
+
+        hands.onResults((results) => {
+            msgEl.style.display = 'none';
+            if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+                const landmarks = results.multiHandLandmarks[0];
+                
+                // Index Tip for Aiming
+                const indexTip = landmarks[8];
+                const thumbTip = landmarks[4];
+                const thumbIP = landmarks[3]; // Thumb joint
+
+                // Gesture: Index extended, others curled (simplified)
+                const aimX = (1 - indexTip.x) * canvas.width;
+                const aimY = indexTip.y * canvas.height;
+                
+                // Detect "Trigger Pull" (Thumb Tip moves close to Thumb IP/Base)
+                const triggerDist = Math.sqrt((thumbTip.x - thumbIP.x)**2 + (thumbTip.y - thumbIP.y)**2);
+                
+                if (triggerDist < 0.04) { // Threshold for "pulled"
+                    if (canShoot) {
+                        triggerShoot(aimX, aimY);
+                        canShoot = false;
+                    }
+                } else {
+                    canShoot = true;
+                }
+
+                lastHand = { x: aimX, y: aimY };
+            } else {
+                lastHand = null;
+            }
+        });
+
+        const video = document.createElement('video');
+        const camera = new Camera(video, {
+            onFrame: async () => { await hands.send({image: video}); },
+            width: 640, height: 480
+        });
+        camera.start();
+
+        // --- Render Loop ---
+        function loop() {
+            ctx.fillStyle = 'rgba(17, 17, 17, 0.4)'; // Motion blur effect
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            spawnDiscs();
+
+            // Update & Draw Discs
+            discs.forEach((d, i) => {
+                d.update();
+                d.draw();
+                // Remove if off screen center
+                if (Math.abs(d.x - canvas.width/2) < 5 && Math.abs(d.y - canvas.height/2) < 5) {
+                    discs.splice(i, 1);
+                }
+            });
+
+            // Draw VFX
+            vfx.forEach((v, i) => {
+                ctx.fillStyle = v.color;
+                ctx.font = `bold ${20 + (1-v.life)*20}px Arial`;
+                ctx.fillText(v.text, v.x, v.y - (1 - v.life) * 50);
+                v.life -= 0.05;
+                if (v.life <= 0) vfx.splice(i, 1);
+            });
+
+            // Draw Aiming Line
+            if (lastHand) {
+                ctx.beginPath();
+                ctx.moveTo(lastHand.x, lastHand.y);
+                ctx.lineTo(lastHand.x, 0); // Laser aiming line
+                ctx.strokeStyle = 'rgba(255, 0, 0, 0.5)';
+                ctx.setLineDash([5, 5]);
+                ctx.stroke();
+                ctx.setLineDash([]);
+
+                // Crosshair
+                ctx.beginPath();
+                ctx.arc(lastHand.x, lastHand.y, 10, 0, Math.PI * 2);
+                ctx.strokeStyle = '#f00';
+                ctx.stroke();
+            }
+
+            requestAnimationFrame(loop);
+        }
+
+        loop();
+
+        window.addEventListener('resize', () => {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+        });
+    </script>
+</body>
+</html>

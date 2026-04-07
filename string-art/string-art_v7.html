@@ -1,0 +1,573 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Live String Art Simulator - Pro Edition</title>
+    
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
+
+    <style>
+        /* --- CORE STYLES --- */
+        body {
+            margin: 0; padding: 0; background-color: #121212;
+            display: flex; justify-content: center; align-items: center;
+            height: 100vh; overflow: hidden; font-family: 'Segoe UI', sans-serif; color: #ddd;
+        }
+
+        #mainCanvas {
+            background-color: #f0e6d2; border-radius: 50%;
+            cursor: pointer; box-shadow: 0 10px 40px rgba(0,0,0,0.8); z-index: 1;
+        }
+
+        /* --- MINIMAP --- */
+        #minimapWrapper {
+            position: fixed; bottom: 20px; right: 20px; z-index: 10;
+            display: flex; flex-direction: column; align-items: center; gap: 5px;
+        }
+        #minimap {
+            width: 150px; height: 150px; background-color: #222;
+            border: 2px solid #555; border-radius: 10px; cursor: grab; pointer-events: auto;
+        }
+        #minimap:active { cursor: grabbing; }
+        .minimap-hint { font-size: 11px; color: #888; text-align: center; pointer-events: none; }
+
+        #fileInput { display: none; }
+
+        #instructions {
+            position: absolute; color: rgba(255, 255, 255, 0.9); pointer-events: none;
+            text-align: center; background: rgba(0, 0, 0, 0.7); padding: 20px 30px; border-radius: 10px; z-index: 5;
+        }
+
+        /* --- UI PANELS --- */
+        .ui-panel {
+            position: fixed; left: 20px; background: rgba(0, 0, 0, 0.8);
+            padding: 15px; border-radius: 8px; border: 1px solid #444; width: 220px; z-index: 10;
+            backdrop-filter: blur(4px);
+        }
+        
+        #statusPanel { top: 20px; }
+        #controlsPanel { top: 120px; display: flex; flex-direction: column; gap: 12px; font-size: 14px; }
+        
+        .control-group { display: flex; flex-direction: column; gap: 5px; }
+        input[type="range"] { width: 100%; cursor: pointer; }
+
+        .toggle-container { display: flex; align-items: center; gap: 10px; cursor: pointer; margin-top: 5px;}
+        .toggle-container input { transform: scale(1.2); cursor: pointer; }
+
+        .btn {
+            padding: 10px; background-color: #4CAF50; color: white; border: none;
+            border-radius: 5px; cursor: pointer; font-weight: bold; transition: background 0.2s; margin-top: 5px;
+        }
+        .btn:hover { background-color: #45a049; }
+        .btn:disabled { background-color: #555; color: #888; cursor: not-allowed; }
+        
+        .btn-warning { background-color: #ff9800; color: black; }
+        .btn-warning:hover { background-color: #e68a00; }
+
+        /* --- MODAL & PDF STYLES --- */
+        #printModal {
+            display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(0,0,0,0.8); z-index: 100; overflow-y: auto; padding: 20px;
+        }
+        #pdfContainer {
+            background: white; max-width: 800px; margin: 0 auto; padding: 40px; color: #333; border-radius: 8px;
+        }
+        .modal-header { display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid #eee; padding-bottom: 20px; margin-bottom: 30px; }
+        .original-img { width: 120px; height: 120px; object-fit: cover; border-radius: 50%; border: 3px solid #ccc; }
+        
+        .sequence-box { display: flex; flex-direction: column; gap: 8px; margin-bottom: 20px; }
+        .color-header { font-size: 18px; font-weight: bold; margin-top: 20px; border-bottom: 2px solid #ddd; padding-bottom: 5px;}
+        .sequence-row { display: flex; align-items: flex-start; background: #fdfdfd; padding: 10px; border: 1px solid #e0e0e0; border-radius: 6px; page-break-inside: avoid; }
+        .sequence-row input[type="checkbox"] { margin-top: 3px; margin-right: 15px; transform: scale(1.2); }
+        .sequence-row label { font-family: monospace; font-size: 14px; line-height: 1.5; width: 100%; }
+        .sequence-row strong { display: inline-block; width: 110px; color: #4CAF50; }
+        
+        .map-stats { display: flex; justify-content: space-between; background: #f4f4f4; padding: 15px; border-radius: 8px; margin-bottom: 20px; font-size: 16px; }
+        .map-stats div strong { color: #d32f2f; }
+
+        .modal-actions { max-width: 800px; margin: 0 auto 20px auto; display: flex; flex-wrap: wrap; gap: 10px; background: white; padding: 15px; border-radius: 8px; align-items: center; }
+        
+        .real-scale-info { font-size: 13px; color: #555; width: 100%; margin-top: 5px; border-top: 1px dashed #ccc; padding-top: 10px;}
+
+        @media print {
+            body * { visibility: hidden; }
+            #printModal, #printModal * { visibility: visible; }
+            #printModal { position: absolute; left: 0; top: 0; padding: 0; margin: 0; overflow: visible; background: white; }
+            .modal-actions { display: none !important; }
+            .sequence-row { border: none; padding: 5px 0; }
+            #pdfContainer { box-shadow: none; padding: 0; }
+        }
+    </style>
+</head>
+<body>
+
+    <input type="file" id="fileInput" accept="image/*">
+    <canvas id="mainCanvas"></canvas>
+    
+    <div id="minimapWrapper">
+        <canvas id="minimap"></canvas>
+        <div class="minimap-hint">Scroll to Zoom • Drag to Pan</div>
+    </div>
+    
+    <div id="instructions">
+        <h2>Click Screen to Upload Image</h2>
+    </div>
+    
+    <div id="statusPanel" class="ui-panel">
+        <h3 style="margin: 0 0 10px 0; border-bottom: 1px solid #444; padding-bottom: 5px;">Status</h3>
+        <div id="counter">Total Strings: 0</div>
+        <div id="phaseIndicator" style="margin-top: 5px; font-size: 14px; color: #aaa;">Phase: Waiting</div>
+    </div>
+
+    <div id="controlsPanel" class="ui-panel">
+        <div class="control-group">
+            <label for="boardSizeInput">Physical Board: <span id="boardSizeValue">16"</span></label>
+            <input type="range" id="boardSizeInput" min="10" max="60" step="1" value="16">
+        </div>
+
+        <div class="control-group">
+            <label for="maxLinesInput">Max Strings: <span id="maxLinesValue">4000</span></label>
+            <input type="range" id="maxLinesInput" min="500" max="12000" step="100" value="4000">
+        </div>
+        
+        <label class="toggle-container">
+            <input type="checkbox" id="colorToggle">
+            <strong>Multi-Color (CMYK)</strong>
+        </label>
+
+        <button id="viewLeafletBtn" class="btn" disabled>📄 View Blueprints</button>
+    </div>
+
+    <div id="printModal">
+        <div class="modal-actions">
+            <button class="btn" id="downloadPdfBtn">📥 Download Sequence Data</button>
+            <button class="btn btn-warning" id="downloadRealScaleBtn">🔨 Download A4 Printable Nail Template</button>
+            <button class="btn" id="closeModalBtn" style="margin-left: auto;">❌ Close</button>
+            <div class="real-scale-info">
+                <strong>How to use the Nail Template:</strong> This will generate a multi-page PDF automatically sliced into standard A4 sheets. Print the file at exactly <strong>100% scale</strong> (Do not choose "Fit to Page"). Trim the dotted edges and tape the pages together using the Grid Coordinates in the top-left of each sheet.
+            </div>
+        </div>
+        <div id="pdfContainer">
+            <div class="modal-header">
+                <div>
+                    <h1 style="margin:0 0 10px 0;">String Art Blueprint</h1>
+                    <p><strong>Mode:</strong> <span id="printMode">Monochrome</span></p>
+                    <p><strong>Total Strings:</strong> <span id="printTotalStrings">0</span></p>
+                    <p><em>Start at Pin 1. Connect pins sequentially.</em></p>
+                </div>
+                <img id="printOriginalImg" class="original-img" src="">
+            </div>
+            <div id="printSequenceContainer"></div>
+
+            <div style="page-break-before: always; padding-top: 20px;">
+                <h2 style="border-bottom: 2px solid #eee; padding-bottom: 10px; margin-bottom: 20px;">Miniature Reference Map</h2>
+                
+                <div class="map-stats">
+                    <div>Board Diameter: <strong id="mapDiameter">16"</strong></div>
+                    <div>Total Pins: <strong id="mapPins">240</strong></div>
+                    <div>Pin Spacing: <strong id="mapSpacing">0.21"</strong> apart</div>
+                </div>
+
+                <img id="printNailMap" style="width: 100%; max-width: 650px; margin: 0 auto; display: block; border-radius: 50%;">
+                <p style="text-align: center; font-size: 13px; color: #666; margin-top: 15px;">
+                    <em>* This diagram is scaled down for reference. Use the orange button above to download the actual physical 1:1 scale templates.</em>
+                </p>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('mainCanvas');
+        const ctx = canvas.getContext('2d');
+        const minimap = document.getElementById('minimap');
+        const miniCtx = minimap.getContext('2d', { willReadFrequently: true });
+        
+        minimap.width = 150; minimap.height = 150;
+
+        const fileInput = document.getElementById('fileInput');
+        const instructions = document.getElementById('instructions');
+        const counterText = document.getElementById('counter');
+        const phaseIndicator = document.getElementById('phaseIndicator');
+        const maxLinesInput = document.getElementById('maxLinesInput');
+        const maxLinesValue = document.getElementById('maxLinesValue');
+        const colorToggle = document.getElementById('colorToggle');
+        const boardSizeInput = document.getElementById('boardSizeInput');
+        const boardSizeValue = document.getElementById('boardSizeValue');
+        const viewLeafletBtn = document.getElementById('viewLeafletBtn');
+
+        const minDim = Math.max(300, Math.min(window.innerWidth - 270, window.innerHeight));
+        const radius = (minDim / 2) - 20;
+        const canvasSize = radius * 2;
+        canvas.width = canvasSize; canvas.height = canvasSize;
+        const cx = radius, cy = radius;
+
+        const numPins = 240; 
+        let boardDiameter = parseInt(boardSizeInput.value); 
+        let maxLines = parseInt(maxLinesInput.value); 
+        const pins = [];
+        
+        let uploadedImg = null; let originalImageSrc = '';
+        let cropX = 0, cropY = 0, cropSize = 100;
+        
+        let isSimulating = false; let currentPin = 0; let linesDrawn = 0;
+        let animationId; let updateTimeout;
+        
+        let useColor = false; let channelsData = []; 
+        let currentChannelIndex = 0; let allSequences = []; 
+
+        const channelsDef = [
+            { name: 'Cyan Thread', color: 'rgba(0, 174, 239, 0.25)', weight: 15 },
+            { name: 'Magenta Thread', color: 'rgba(236, 0, 140, 0.25)', weight: 15 },
+            { name: 'Yellow Thread', color: 'rgba(255, 242, 0, 0.25)', weight: 15 },
+            { name: 'Black Thread', color: 'rgba(0, 0, 0, 0.25)', weight: 15 }
+        ];
+        const monoDef = [{ name: 'Black Thread', color: 'rgba(0, 0, 0, 0.15)', weight: 15 }];
+
+        for (let i = 0; i < numPins; i++) {
+            const angle = (Math.PI * 2 * i) / numPins;
+            pins.push({ x: cx + (radius - 1) * Math.cos(angle), y: cy + (radius - 1) * Math.sin(angle) });
+        }
+
+        canvas.addEventListener('click', () => { if(!uploadedImg) fileInput.click(); });
+        
+        boardSizeInput.addEventListener('input', (e) => {
+            boardDiameter = parseInt(e.target.value);
+            boardSizeValue.innerText = boardDiameter + '"';
+        });
+
+        colorToggle.addEventListener('change', (e) => { useColor = e.target.checked; scheduleReprocess(); });
+        maxLinesInput.addEventListener('input', (e) => {
+            maxLines = parseInt(e.target.value);
+            maxLinesValue.innerText = maxLines;
+            if (uploadedImg) scheduleReprocess(); 
+        });
+
+        fileInput.addEventListener('change', (e) => {
+            const file = e.target.files[0];
+            if (!file) return;
+            const reader = new FileReader();
+            reader.onload = (event) => {
+                originalImageSrc = event.target.result; 
+                uploadedImg = new Image();
+                uploadedImg.onload = () => {
+                    cropSize = Math.min(uploadedImg.width, uploadedImg.height);
+                    cropX = (uploadedImg.width - cropSize) / 2;
+                    cropY = (uploadedImg.height - cropSize) / 2;
+                    scheduleReprocess();
+                };
+                uploadedImg.src = originalImageSrc;
+            };
+            reader.readAsDataURL(file);
+        });
+
+        let isDragging = false; let lastMx = 0, lastMy = 0;
+        minimap.addEventListener('mousedown', (e) => { if (!uploadedImg) return; isDragging = true; lastMx = e.clientX; lastMy = e.clientY; });
+        window.addEventListener('mousemove', (e) => {
+            if (!isDragging || !uploadedImg) return;
+            const scale = Math.min(150 / uploadedImg.width, 150 / uploadedImg.height);
+            cropX += (e.clientX - lastMx) / scale; cropY += (e.clientY - lastMy) / scale;
+            lastMx = e.clientX; lastMy = e.clientY; clampCrop(); drawMinimap(); scheduleReprocess();
+        });
+        window.addEventListener('mouseup', () => { isDragging = false; });
+        minimap.addEventListener('wheel', (e) => {
+            if (!uploadedImg) return; e.preventDefault();
+            const zoom = e.deltaY > 0 ? 1.1 : 0.9; const oldSize = cropSize; cropSize *= zoom;
+            cropSize = Math.max(20, Math.min(cropSize, Math.min(uploadedImg.width, uploadedImg.height)));
+            cropX -= (cropSize - oldSize) / 2; cropY -= (cropSize - oldSize) / 2;
+            clampCrop(); drawMinimap(); scheduleReprocess();
+        }, { passive: false });
+
+        function clampCrop() { cropX = Math.max(0, Math.min(cropX, uploadedImg.width - cropSize)); cropY = Math.max(0, Math.min(cropY, uploadedImg.height - cropSize)); }
+
+        function drawMinimap() {
+            if (!uploadedImg) return;
+            miniCtx.clearRect(0, 0, 150, 150);
+            const scale = Math.min(150 / uploadedImg.width, 150 / uploadedImg.height);
+            const ox = (150 - uploadedImg.width * scale) / 2, oy = (150 - uploadedImg.height * scale) / 2;
+            miniCtx.drawImage(uploadedImg, ox, oy, uploadedImg.width * scale, uploadedImg.height * scale);
+            const cropCx = ox + (cropX + cropSize/2) * scale, cropCy = oy + (cropY + cropSize/2) * scale, r = (cropSize/2) * scale;
+            miniCtx.beginPath(); miniCtx.arc(cropCx, cropCy, r, 0, Math.PI*2);
+            miniCtx.strokeStyle = '#00ff00'; miniCtx.lineWidth = 2; miniCtx.stroke();
+            miniCtx.fillStyle = 'rgba(0, 255, 0, 0.2)'; miniCtx.fill();
+            miniCtx.beginPath(); miniCtx.rect(0, 0, 150, 150); miniCtx.arc(cropCx, cropCy, r, 0, Math.PI*2, true);
+            miniCtx.fillStyle = 'rgba(0,0,0,0.6)'; miniCtx.fill();
+        }
+
+        function scheduleReprocess() { drawMinimap(); clearTimeout(updateTimeout); updateTimeout = setTimeout(() => { processImageData(); }, 150); }
+
+        function processImageData() {
+            isSimulating = false; cancelAnimationFrame(animationId);
+            linesDrawn = 0; currentPin = 0; currentChannelIndex = 0;
+            counterText.innerText = `Total Strings: 0`;
+            instructions.style.display = 'none'; viewLeafletBtn.disabled = false;
+            
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            
+            const activeDefs = useColor ? channelsDef : monoDef;
+            channelsData = []; allSequences = [];
+            for(let i=0; i<activeDefs.length; i++) { channelsData.push(new Uint8Array(canvasSize * canvasSize)); allSequences.push([1]); }
+
+            const offCanvas = document.createElement('canvas'); offCanvas.width = canvasSize; offCanvas.height = canvasSize;
+            const offCtx = offCanvas.getContext('2d', { willReadFrequently: true });
+            offCtx.fillStyle = '#fff'; offCtx.fillRect(0, 0, canvasSize, canvasSize);
+            offCtx.beginPath(); offCtx.arc(cx, cy, radius, 0, Math.PI * 2); offCtx.clip();
+            offCtx.drawImage(uploadedImg, cropX, cropY, cropSize, cropSize, 0, 0, canvasSize, canvasSize);
+
+            const rawData = offCtx.getImageData(0, 0, canvasSize, canvasSize).data;
+            
+            for (let i = 0; i < rawData.length; i += 4) {
+                const px = i / 4, r = rawData[i] / 255, g = rawData[i+1] / 255, b = rawData[i+2] / 255;
+                if (useColor) {
+                    const k = 1 - Math.max(r, g, b);
+                    channelsData[0][px] = ((1 - r - k) / (1 - k || 1)) * 255;
+                    channelsData[1][px] = ((1 - g - k) / (1 - k || 1)) * 255;
+                    channelsData[2][px] = ((1 - b - k) / (1 - k || 1)) * 255;
+                    channelsData[3][px] = k * 255;
+                } else {
+                    channelsData[0][px] = (1 - (0.299 * r + 0.587 * g + 0.114 * b)) * 255;
+                }
+            }
+            isSimulating = true; stepSimulation();
+        }
+
+        function getLinePixels(x0, y0, x1, y1) {
+            const pixels = []; x0 = Math.floor(x0); y0 = Math.floor(y0); x1 = Math.floor(x1); y1 = Math.floor(y1);
+            let dx = Math.abs(x1 - x0), sx = x0 < x1 ? 1 : -1, dy = Math.abs(y1 - y0), sy = y0 < y1 ? 1 : -1, err = dx - dy;
+            while (true) {
+                pixels.push({x: x0, y: y0});
+                if (x0 === x1 && y0 === y1) break;
+                let e2 = 2 * err; if (e2 > -dy) { err -= dy; x0 += sx; } if (e2 < dx) { err += dx; y0 += sy; }
+            }
+            return pixels;
+        }
+
+        function stepSimulation() {
+            if (!isSimulating || linesDrawn >= maxLines) { isSimulating = false; phaseIndicator.innerText = "Phase: Complete"; return; }
+
+            const activeDefs = useColor ? channelsDef : monoDef;
+            const linesPerChannel = Math.floor(maxLines / activeDefs.length);
+            
+            if (allSequences[currentChannelIndex].length - 1 >= linesPerChannel) {
+                currentChannelIndex++; currentPin = 0; 
+                if (currentChannelIndex >= activeDefs.length) { isSimulating = false; phaseIndicator.innerText = `Phase: Complete`; return; }
+            }
+
+            phaseIndicator.innerText = `Phase: ${activeDefs[currentChannelIndex].name} (${currentChannelIndex+1}/${activeDefs.length})`;
+            const targetData = channelsData[currentChannelIndex], channelProps = activeDefs[currentChannelIndex];
+            
+            const edgeBuffer = 14; 
+
+            for (let iter = 0; iter < 15; iter++) {
+                if (linesDrawn >= maxLines || allSequences[currentChannelIndex].length - 1 >= linesPerChannel) break;
+
+                let bestScore = -1, bestPin = -1, bestPixels = null;
+
+                for (let nextPin = 0; nextPin < numPins; nextPin++) {
+                    if (Math.abs(nextPin - currentPin) < edgeBuffer || Math.abs(nextPin - currentPin) > numPins - edgeBuffer) continue;
+                    let p1 = pins[currentPin], p2 = pins[nextPin], pixels = getLinePixels(p1.x, p1.y, p2.x, p2.y);
+                    let score = 0;
+                    for (let p of pixels) { if(p.x >= 0 && p.x < canvasSize && p.y >= 0 && p.y < canvasSize) score += targetData[p.y * canvasSize + p.x]; }
+                    score = score / pixels.length;
+                    if (score > bestScore) { bestScore = score; bestPin = nextPin; bestPixels = pixels; }
+                }
+
+                if (bestPin !== -1 && bestPixels && bestScore > 0) {
+                    ctx.beginPath(); ctx.moveTo(pins[currentPin].x, pins[currentPin].y); ctx.lineTo(pins[bestPin].x, pins[bestPin].y);
+                    ctx.strokeStyle = channelProps.color; ctx.lineWidth = 0.5; ctx.stroke();
+                    for (let p of bestPixels) {
+                        if(p.x >= 0 && p.x < canvasSize && p.y >= 0 && p.y < canvasSize) {
+                            let idx = p.y * canvasSize + p.x; targetData[idx] = Math.max(0, targetData[idx] - channelProps.weight);
+                        }
+                    }
+                    currentPin = bestPin; allSequences[currentChannelIndex].push(bestPin + 1); linesDrawn++;
+                    counterText.innerText = `Total Strings: ${linesDrawn}`;
+                } else {
+                    currentChannelIndex++; currentPin = 0;
+                    if (currentChannelIndex >= activeDefs.length) { isSimulating = false; phaseIndicator.innerText = `Finished Early (Smart Cap)`; return; }
+                    break;
+                }
+            }
+            if (isSimulating) animationId = requestAnimationFrame(stepSimulation);
+        }
+
+        function generateMiniNailMapImage() {
+            const mCanvas = document.createElement('canvas');
+            mCanvas.width = 1000; mCanvas.height = 1000;
+            const mCtx = mCanvas.getContext('2d');
+            const mCx = 500, mCy = 500, mRadius = 450;
+            
+            mCtx.fillStyle = '#ffffff'; mCtx.fillRect(0,0,1000,1000);
+            
+            mCtx.beginPath(); mCtx.arc(mCx, mCy, mRadius, 0, Math.PI*2);
+            mCtx.strokeStyle = '#333'; mCtx.lineWidth = 3; mCtx.stroke();
+            mCtx.font = "bold 16px monospace"; mCtx.textAlign = "center"; mCtx.textBaseline = "middle";
+            
+            for(let i = 0; i < numPins; i++) {
+                const angle = (Math.PI * 2 * i) / numPins;
+                const px = mCx + mRadius * Math.cos(angle);
+                const py = mCy + mRadius * Math.sin(angle);
+                
+                mCtx.beginPath(); mCtx.arc(px, py, 4, 0, Math.PI*2);
+                mCtx.fillStyle = '#000'; mCtx.fill();
+                
+                if(i === 0 || (i + 1) % 10 === 0) {
+                    const tx = mCx + (mRadius + 30) * Math.cos(angle);
+                    const ty = mCy + (mRadius + 30) * Math.sin(angle);
+                    mCtx.fillStyle = '#d32f2f'; mCtx.fillText(i + 1, tx, ty);
+                }
+            }
+            return mCanvas.toDataURL();
+        }
+
+        // --- FIXED: In-Memory A4 Tiling Engine ---
+        document.getElementById('downloadRealScaleBtn').addEventListener('click', function() {
+            this.innerText = "⏳ Slicing A4 Templates..."; 
+            this.disabled = true;
+
+            setTimeout(() => {
+                const dpi = 150; 
+                const physicalSizeInches = boardDiameter + 1; // 1 inch total margin
+                const pxSize = physicalSizeInches * dpi;
+                
+                // 1. Create Master Canvas
+                const mCanvas = document.createElement('canvas');
+                mCanvas.width = pxSize; mCanvas.height = pxSize;
+                const mCtx = mCanvas.getContext('2d');
+                
+                const mCx = pxSize / 2, mCy = pxSize / 2;
+                const mRadius = (boardDiameter / 2) * dpi;
+                
+                mCtx.fillStyle = '#ffffff'; mCtx.fillRect(0, 0, pxSize, pxSize);
+                
+                mCtx.beginPath(); mCtx.arc(mCx, mCy, mRadius, 0, Math.PI*2);
+                mCtx.strokeStyle = '#000'; mCtx.lineWidth = 2; mCtx.stroke();
+                
+                mCtx.beginPath();
+                mCtx.moveTo(mCx - 50, mCy); mCtx.lineTo(mCx + 50, mCy);
+                mCtx.moveTo(mCx, mCy - 50); mCtx.lineTo(mCx, mCy + 50);
+                mCtx.strokeStyle = '#888'; mCtx.lineWidth = 1; mCtx.stroke();
+
+                mCtx.font = "bold 24px Arial"; mCtx.textAlign = "center"; mCtx.textBaseline = "middle";
+                
+                for(let i = 0; i < numPins; i++) {
+                    const angle = (Math.PI * 2 * i) / numPins;
+                    const px = mCx + mRadius * Math.cos(angle);
+                    const py = mCy + mRadius * Math.sin(angle);
+                    
+                    mCtx.beginPath();
+                    mCtx.moveTo(px - 15, py); mCtx.lineTo(px + 15, py);
+                    mCtx.moveTo(px, py - 15); mCtx.lineTo(px, py + 15);
+                    mCtx.strokeStyle = '#000'; mCtx.lineWidth = 2; mCtx.stroke();
+                    
+                    if(i === 0 || (i + 1) % 5 === 0) {
+                        const tx = mCx + (mRadius - 40) * Math.cos(angle);
+                        const ty = mCy + (mRadius - 40) * Math.sin(angle);
+                        mCtx.fillStyle = '#000'; mCtx.fillText(i + 1, tx, ty);
+                    }
+                }
+
+                // 2. Tile for A4 (Printable Area 7.5" x 10.5")
+                const tileWInches = 7.5; const tileHInches = 10.5;
+                const tileWPx = tileWInches * dpi; const tileHPx = tileHInches * dpi;
+                const cols = Math.ceil(pxSize / tileWPx); const rows = Math.ceil(pxSize / tileHPx);
+
+                // Create a pure, detached DOM element to hold the pages
+                const printWrapper = document.createElement('div');
+
+                for (let r = 0; r < rows; r++) {
+                    for (let c = 0; c < cols; c++) {
+                        const tCanvas = document.createElement('canvas');
+                        tCanvas.width = tileWPx; tCanvas.height = tileHPx;
+                        const tCtx = tCanvas.getContext('2d');
+
+                        tCtx.fillStyle = '#ffffff'; tCtx.fillRect(0, 0, tileWPx, tileHPx);
+
+                        tCtx.drawImage(mCanvas, 
+                            c * tileWPx, r * tileHPx, tileWPx, tileHPx, 
+                            0, 0, tileWPx, tileHPx
+                        );
+
+                        // Registration Marks (Dashed cut lines)
+                        tCtx.strokeStyle = '#999'; tCtx.setLineDash([15, 15]); tCtx.lineWidth = 2;
+                        tCtx.strokeRect(0, 0, tileWPx, tileHPx);
+                        tCtx.setLineDash([]); 
+
+                        tCtx.fillStyle = '#333'; tCtx.font = "bold 16px Arial"; 
+                        tCtx.textAlign = "left"; tCtx.textBaseline = "top";
+                        tCtx.fillText(`Page ${r * cols + c + 1} (Row ${r + 1}, Col ${c + 1})`, 20, 20);
+
+                        const pageDiv = document.createElement('div');
+                        pageDiv.className = "a4-page"; // Target class for page breaks
+                        pageDiv.style.width = tileWInches + 'in';
+                        pageDiv.style.height = tileHInches + 'in';
+                        pageDiv.style.margin = "0 auto";
+                        
+                        const img = document.createElement('img');
+                        img.src = tCanvas.toDataURL('image/jpeg', 1.0);
+                        img.style.width = '100%'; img.style.height = '100%'; img.style.display = 'block';
+                        
+                        pageDiv.appendChild(img);
+                        printWrapper.appendChild(pageDiv);
+                    }
+                }
+
+                // 3. Process PDF directly from memory
+                const opt = {
+                    margin: 0.25, 
+                    filename: `StringArt-A4-Tiles-${boardDiameter}inch.pdf`,
+                    image: { type: 'jpeg', quality: 0.98 },
+                    html2canvas: { scale: 2 }, 
+                    jsPDF: { unit: 'in', format: 'a4', orientation: 'portrait' },
+                    pagebreak: { mode: 'css', after: '.a4-page' }
+                };
+
+                html2pdf().set(opt).from(printWrapper).save().then(() => {
+                    this.innerText = "🔨 Download A4 Printable Nail Template"; 
+                    this.disabled = false;
+                });
+            }, 100);
+        });
+
+        // --- Standard Leaflet Generator ---
+        const printModal = document.getElementById('printModal'); const printSequenceContainer = document.getElementById('printSequenceContainer');
+        viewLeafletBtn.addEventListener('click', () => {
+            if (linesDrawn === 0) return;
+            
+            const activeDefs = useColor ? channelsDef : monoDef; let fullHtml = '';
+            for(let c = 0; c < activeDefs.length; c++) {
+                const seq = allSequences[c]; if (seq.length <= 1) continue;
+                fullHtml += `<div class="color-header" style="color: ${activeDefs[c].color.replace(', 0.25)', ', 1)')}">${activeDefs[c].name} (${seq.length - 1} Strings)</div><div class="sequence-box">`;
+                for (let i = 0; i < seq.length; i += 10) {
+                    const chunk = seq.slice(i, i + 10); if (chunk.length <= 1 && i !== 0) continue;
+                    fullHtml += `<div class="sequence-row"><input type="checkbox" id="chk_${c}_${i}"><label for="chk_${c}_${i}"><strong>Step ${i + 1}-${i + chunk.length}:</strong><span>${chunk.join(' ➔ ')}</span></label></div>`;
+                }
+                fullHtml += `</div>`;
+            }
+            
+            const tCanvas = document.createElement('canvas'); tCanvas.width = 200; tCanvas.height = 200; const tCtx = tCanvas.getContext('2d');
+            tCtx.beginPath(); tCtx.arc(100, 100, 100, 0, Math.PI*2); tCtx.clip(); tCtx.drawImage(uploadedImg, cropX, cropY, cropSize, cropSize, 0, 0, 200, 200);
+            document.getElementById('printOriginalImg').src = tCanvas.toDataURL();
+            
+            document.getElementById('printMode').innerText = useColor ? "CMYK Multi-Color" : "Monochrome";
+            document.getElementById('printTotalStrings').innerText = linesDrawn;
+            printSequenceContainer.innerHTML = fullHtml; 
+            
+            document.getElementById('mapDiameter').innerText = `${boardDiameter}"`;
+            document.getElementById('mapPins').innerText = numPins;
+            const spacing = (Math.PI * boardDiameter) / numPins;
+            document.getElementById('mapSpacing').innerText = `${spacing.toFixed(2)}"`;
+            document.getElementById('printNailMap').src = generateMiniNailMapImage();
+
+            printModal.style.display = 'block';
+        });
+
+        document.getElementById('closeModalBtn').addEventListener('click', () => printModal.style.display = 'none');
+        document.getElementById('downloadPdfBtn').addEventListener('click', function() {
+            const element = document.getElementById('pdfContainer');
+            this.innerText = "⏳ Generating PDF..."; this.disabled = true;
+            html2pdf().set({ margin: 0.5, filename: `StringArt-Sequence-Instructions.pdf`, image: { type: 'jpeg', quality: 0.98 }, html2canvas: { scale: 2 }, jsPDF: { unit: 'in', format: 'letter', orientation: 'portrait' }}).from(element).save().then(() => { this.innerText = "📥 Download Sequence Data"; this.disabled = false; });
+        });
+    </script>
+</body>
+</html>

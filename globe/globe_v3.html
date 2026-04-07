@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>COSMIC ATOM - NEURAL LINK</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.4.0/p5.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+    <style>
+        body { margin: 0; overflow: hidden; background: #000; font-family: 'Courier New', monospace; }
+        #ui { position: absolute; top: 20px; left: 20px; color: #0ff; pointer-events: none; z-index: 100; text-transform: uppercase; letter-spacing: 2px; }
+        #overlay { 
+            position: absolute; inset: 0; background: rgba(0,0,0,0.9); 
+            display: flex; justify-content: center; align-items: center; 
+            color: #0ff; cursor: pointer; z-index: 1000; text-align: center;
+        }
+        video { display: none; }
+    </style>
+</head>
+<body>
+    <div id="overlay"><h1>[ INITIALIZE NEURAL LINK ]<br><span style="font-size: 14px; opacity: 0.7;">Click to Sync Audio & Visuals</span></h1></div>
+    <div id="ui">
+        <div id="status">Scanning...</div>
+        <div id="mode" style="font-size: 12px; color: #555;">Passive Drift</div>
+    </div>
+    <video id="webcam"></video>
+
+<script>
+let particles = [];
+const numParticles = 1200;
+let handLandmarks = null;
+let handOpenness = 0;
+let prevOpenness = 0;
+let explosionActive = 0; // 0 to 1 decay
+let synth, filter, reverb;
+let audioInit = false;
+
+// MediaPipe Setup
+const video = document.getElementById('webcam');
+const hands = new Hands({ locateFile: (f) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${f}` });
+hands.setOptions({ maxNumHands: 1, modelComplexity: 1, minDetectionConfidence: 0.6 });
+
+hands.onResults((res) => {
+    if (res.multiHandLandmarks && res.multiHandLandmarks.length > 0) {
+        handLandmarks = res.multiHandLandmarks[0];
+        document.getElementById('status').innerText = "Link Synchronized";
+        
+        // Calculate Openness: Distance between Thumb Tip (4) and Pinky Tip (20)
+        let d = dist(handLandmarks[4].x, handLandmarks[4].y, handLandmarks[20].x, handLandmarks[20].y);
+        prevOpenness = handOpenness;
+        handOpenness = constrain(map(d, 0.05, 0.3, 0, 1), 0, 1);
+
+        // Explosion Trigger: High velocity opening
+        if (handOpenness - prevOpenness > 0.15) {
+            explosionActive = 1.0;
+        }
+        if(audioInit) updateAudio();
+    } else {
+        handLandmarks = null;
+        document.getElementById('status').innerText = "Searching for Signal...";
+        if(audioInit) synth.volume.rampTo(-60, 0.5);
+    }
+});
+
+new Camera(video, { onFrame: async () => { await hands.send({image: video}); }, width: 640, height: 480 }).start();
+
+function setup() {
+    createCanvas(windowWidth, windowHeight, WEBGL);
+    for (let i = 0; i < numParticles; i++) {
+        particles.push(new Particle());
+    }
+}
+
+function initAudio() {
+    synth = new Tone.FatOscillator("C2", "sawtooth", 40).start();
+    filter = new Tone.LowpassCombFilter(0.1, 0.5, 3000).toDestination();
+    reverb = new Tone.Reverb(2).toDestination();
+    synth.connect(filter);
+    filter.connect(reverb);
+    synth.volume.value = -15;
+    audioInit = true;
+    document.getElementById('overlay').style.display = 'none';
+}
+
+function updateAudio() {
+    let freq = map(handOpenness, 0, 1, 40, 120);
+    synth.frequency.rampTo(freq, 0.1);
+    filter.resonance.value = map(handOpenness, 0, 1, 0.1, 0.9);
+}
+
+function draw() {
+    background(0);
+    orbitControl(); // Allow user to look around the 3D space
+    
+    // Global Rotation
+    rotateY(frameCount * 0.005);
+    rotateX(frameCount * 0.002);
+
+    // Draw Neural Hand Mesh (Faint White Points)
+    if (handLandmarks) {
+        push();
+        // Shift hand points to the front of the 3D scene
+        translate(0, 0, 200); 
+        stroke(255, 255, 255, 40);
+        strokeWeight(3);
+        handLandmarks.forEach(p => {
+            let hx = (0.5 - p.x) * width;
+            let hy = (p.y - 0.5) * height;
+            point(hx, hy, 0);
+        });
+        pop();
+    }
+
+    // Process Particles
+    particles.forEach(p => {
+        p.update();
+        p.show();
+    });
+
+    // Decay Explosion
+    if (explosionActive > 0) explosionActive *= 0.95;
+}
+
+class Particle {
+    constructor() {
+        this.reset();
+    }
+
+    reset() {
+        this.pos = p5.Vector.random3D().mult(random(10, 50));
+        this.vel = createVector(0, 0, 0);
+        this.acc = createVector(0, 0, 0);
+        this.color = color(0, 255, 255);
+    }
+
+    update() {
+        if (handLandmarks) {
+            let targetRadius = map(handOpenness, 0, 1, 40, 400);
+            
+            // Explosion force
+            if (explosionActive > 0.1) {
+                targetRadius *= (1 + explosionActive * 5);
+            }
+
+            let d = this.pos.mag();
+            let force = (d - targetRadius) * -0.01;
+            
+            let steer = this.pos.copy().normalize().mult(force);
+            this.acc.add(steer);
+
+            // Jitter for vibration
+            let jitter = map(handOpenness, 0.8, 1, 0, 15, true);
+            this.pos.add(p5.Vector.random3D().mult(jitter));
+            
+            this.maxSpeed = explosionActive > 0.1 ? 30 : 15;
+        } else {
+            // Drift mode
+            let n = noise(this.pos.x * 0.01, this.pos.y * 0.01, frameCount * 0.01);
+            this.acc = p5.Vector.random3D().mult(0.1);
+            this.maxSpeed = 2;
+        }
+
+        this.vel.add(this.acc);
+        this.vel.limit(this.maxSpeed);
+        this.pos.add(this.vel);
+        this.acc.mult(0);
+    }
+
+    show() {
+        push();
+        translate(this.pos.x, this.pos.y, this.pos.z);
+        
+        // Color shifts to red/white during expansion/explosion
+        let r = map(handOpenness + explosionActive, 0.7, 1.5, 0, 255, true);
+        let g = map(handOpenness, 0, 0.8, 255, 50, true);
+        stroke(r, g, 255, 200);
+        
+        strokeWeight(2 + explosionActive * 4);
+        point(0, 0, 0);
+        pop();
+    }
+}
+
+function windowResized() { resizeCanvas(windowWidth, windowHeight); }
+window.addEventListener('mousedown', () => { if(!audioInit) initAudio(); });
+</script>
+</body>
+</html>

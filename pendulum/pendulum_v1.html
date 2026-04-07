@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Interactive Physics Pendulum</title>
+    <style>
+        body { margin: 0; overflow: hidden; background: #0b0b0e; font-family: 'Segoe UI', sans-serif; color: white; }
+        canvas { position: absolute; top: 0; left: 0; touch-action: none; }
+        #ui {
+            position: absolute; top: 20px; left: 20px; z-index: 10;
+            background: rgba(20, 20, 25, 0.9); backdrop-filter: blur(10px);
+            padding: 20px; border-radius: 12px; border: 1px solid rgba(255,255,255,0.1);
+            display: flex; flex-direction: column; gap: 15px; width: 260px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+        }
+        .controls { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+        button {
+            padding: 10px; cursor: pointer; border: none; border-radius: 6px;
+            background: #3f3f46; color: white; font-weight: bold; transition: 0.2s;
+        }
+        button:hover { background: #52525b; }
+        button#playBtn { background: #10b981; grid-column: span 2; font-size: 1.1em; }
+        button#playBtn.active { background: #f59e0b; color: #000; }
+        button#spinBtn.active { background: #6366f1; }
+        button#clearBtn { background: #ef4444; }
+        .slider-group { display: flex; flex-direction: column; gap: 5px; }
+        label { font-size: 0.75em; text-transform: uppercase; letter-spacing: 1px; opacity: 0.6; }
+        input[type=range] { width: 100%; cursor: pointer; accent-color: #6366f1; }
+        .status { font-size: 0.8em; padding: 5px; border-radius: 4px; text-align: center; background: rgba(0,0,0,0.3); }
+    </style>
+</head>
+<body>
+
+    <div id="ui">
+        <button id="playBtn">PLAY</button>
+        <div class="controls">
+            <button id="spinBtn">Spin: OFF</button>
+            <button id="clearBtn">Reset</button>
+        </div>
+        
+        <div class="slider-group">
+            <label>Spin Speed</label>
+            <input type="range" id="speedSlider" min="0" max="0.3" step="0.01" value="0.08">
+        </div>
+
+        <div id="statusLabel" class="status">Mode: Drawing...</div>
+    </div>
+
+    <canvas id="trailCanvas"></canvas>
+    <canvas id="mainCanvas"></canvas>
+
+    <script>
+        const canvas = document.getElementById('mainCanvas');
+        const ctx = canvas.getContext('2d');
+        const tCanvas = document.getElementById('trailCanvas');
+        const tCtx = tCanvas.getContext('2d');
+        
+        const playBtn = document.getElementById('playBtn');
+        const spinBtn = document.getElementById('spinBtn');
+        const clearBtn = document.getElementById('clearBtn');
+        const speedSlider = document.getElementById('speedSlider');
+        const statusLabel = document.getElementById('statusLabel');
+
+        let width, height, centerX, centerY;
+        let points = []; 
+        let constraints = [];
+        
+        let isPlaying = false;
+        let isSpinning = false;
+        let angle = 0;
+        let draggingPoint = null;
+
+        const gravityVal = 0.5;
+        const friction = 0.998;
+        const iterations = 30;
+
+        function init() {
+            width = window.innerWidth;
+            height = window.innerHeight;
+            canvas.width = tCanvas.width = width;
+            canvas.height = tCanvas.height = height;
+            centerX = width / 2;
+            centerY = height / 2;
+            
+            points = [{
+                x: centerX, y: centerY, 
+                oldX: centerX, oldY: centerY, 
+                pinned: true
+            }];
+            render();
+        }
+
+        window.addEventListener('resize', init);
+
+        canvas.addEventListener('mousedown', (e) => {
+            if (isPlaying) return; // Block drawing when playing
+
+            const mx = e.clientX;
+            const my = e.clientY;
+
+            const prev = points[points.length - 1];
+            const newPoint = { 
+                x: mx, y: my, 
+                oldX: mx, oldY: my, 
+                pinned: false
+            };
+            points.push(newPoint);
+            constraints.push({
+                p1: prev, p2: newPoint,
+                length: Math.hypot(prev.x - mx, prev.y - my)
+            });
+        });
+
+        playBtn.addEventListener('click', () => {
+            isPlaying = !isPlaying;
+            playBtn.textContent = isPlaying ? "PAUSE / EDIT" : "PLAY";
+            playBtn.classList.toggle('active', isPlaying);
+            statusLabel.textContent = isPlaying ? "Mode: Simulating" : "Mode: Drawing...";
+            statusLabel.style.color = isPlaying ? "#10b981" : "#fff";
+        });
+
+        spinBtn.addEventListener('click', () => {
+            isSpinning = !isSpinning;
+            spinBtn.textContent = isSpinning ? "Spin: ON" : "Spin: OFF";
+            spinBtn.classList.toggle('active', isSpinning);
+        });
+
+        clearBtn.addEventListener('click', () => {
+            tCtx.clearRect(0, 0, width, height);
+            isPlaying = false;
+            isSpinning = false;
+            angle = 0;
+            playBtn.textContent = "PLAY";
+            spinBtn.textContent = "Spin: OFF";
+            playBtn.classList.remove('active');
+            spinBtn.classList.remove('active');
+            statusLabel.textContent = "Mode: Drawing...";
+            init();
+            constraints = [];
+        });
+
+        function update() {
+            if (!isPlaying) return;
+
+            if (isSpinning) angle += parseFloat(speedSlider.value);
+
+            // 1. Verlet Integration
+            points.forEach((p) => {
+                if (p.pinned) return;
+
+                const vx = (p.x - p.oldX) * friction;
+                const vy = (p.y - p.oldY) * friction;
+                
+                p.oldX = p.x;
+                p.oldY = p.y;
+                
+                p.x += vx;
+                p.y += vy + gravityVal;
+            });
+
+            // 2. Solve Constraints
+            for (let i = 0; i < iterations; i++) {
+                constraints.forEach(c => {
+                    const dx = c.p2.x - c.p1.x;
+                    const dy = c.p2.y - c.p1.y;
+                    const dist = Math.sqrt(dx * dx + dy * dy);
+                    const diff = (c.length - dist) / dist;
+                    const m = 0.5;
+                    const ox = dx * diff * m;
+                    const oy = dy * diff * m;
+
+                    if (!c.p1.pinned) { c.p1.x -= ox; c.p1.y -= oy; }
+                    if (!c.p2.pinned) { c.p2.x += ox; c.p2.y += oy; }
+                });
+
+                // Keep pivot locked
+                points[0].x = centerX;
+                points[0].y = centerY;
+
+                // Motor Logic for Spinning
+                if (isSpinning && points.length > 1) {
+                    const motor = points[1];
+                    const dist = constraints[0].length;
+                    motor.x = centerX + Math.cos(angle) * dist;
+                    motor.y = centerY + Math.sin(angle) * dist;
+                }
+            }
+        }
+
+        function render() {
+            ctx.clearRect(0, 0, width, height);
+
+            // Draw Lines
+            ctx.beginPath();
+            ctx.lineWidth = 2.5;
+            ctx.strokeStyle = "rgba(255,255,255,0.5)";
+            points.forEach((p, i) => {
+                if (i === 0) ctx.moveTo(p.x, p.y);
+                else ctx.lineTo(p.x, p.y);
+            });
+            ctx.stroke();
+
+            // Draw Points and Trails
+            points.forEach((p, i) => {
+                ctx.fillStyle = p.pinned ? "#fbbf24" : "#6366f1";
+                ctx.beginPath();
+                ctx.arc(p.x, p.y, p.pinned ? 7 : 4, 0, Math.PI * 2);
+                ctx.fill();
+
+                if (isPlaying && !p.pinned) {
+                    tCtx.strokeStyle = `hsla(${(i * 45) % 360}, 80%, 65%, 0.3)`;
+                    tCtx.lineWidth = 1.2;
+                    tCtx.beginPath();
+                    tCtx.moveTo(p.lx || p.x, p.ly || p.y);
+                    tCtx.lineTo(p.x, p.y);
+                    tCtx.stroke();
+                }
+                p.lx = p.x;
+                p.ly = p.y;
+            });
+        }
+
+        function loop() {
+            update();
+            render();
+            requestAnimationFrame(loop);
+        }
+
+        init();
+        loop();
+    </script>
+</body>
+</html>

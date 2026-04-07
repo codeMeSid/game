@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Stencil Path Tracer</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.0/p5.js"></script>
+    <style>
+        body { margin: 0; padding: 0; background: #111; color: white; font-family: sans-serif; overflow: hidden; display: flex; }
+        #controls { width: 280px; padding: 20px; background: #222; height: 100vh; box-sizing: border-box; display: flex; flex-direction: column; gap: 15px; border-right: 1px solid #444; z-index: 10; }
+        .control-group { display: flex; flex-direction: column; gap: 5px; }
+        label { font-size: 12px; color: #aaa; }
+        button { padding: 10px; cursor: pointer; background: #444; border: none; color: white; border-radius: 4px; font-weight: bold; }
+        button:hover { background: #666; }
+        input[type=range] { width: 100%; }
+        .radio-group { display: flex; gap: 10px; font-size: 14px; }
+        canvas { flex-grow: 1; }
+    </style>
+</head>
+<body>
+
+<div id="controls">
+    <h3>Stencil Tracer</h3>
+    
+    <button id="newPath">Generate New Curve</button>
+    
+    <div class="control-group">
+        <label>Circle Size (Radius)</label>
+        <input type="range" id="radiusInput" min="10" max="100" value="40">
+    </div>
+
+    <div class="control-group">
+        <label>Pen Offset (Point inside/outside circle)</label>
+        <input type="range" id="offsetInput" min="0" max="150" value="30">
+    </div>
+
+    <div class="control-group">
+        <label>Trace Speed</label>
+        <input type="range" id="speedInput" min="0.001" max="0.02" step="0.001" value="0.005">
+    </div>
+
+    <div class="radio-group">
+        <label><input type="radio" name="side" value="inside" checked> Inside</label>
+        <label><input type="radio" name="side" value="outside"> Outside</label>
+    </div>
+
+    <div class="control-group">
+        <label><input type="checkbox" id="traceOnly"> Trace Only (Hide Path)</label>
+    </div>
+
+    <button id="playBtn">Play / Pause</button>
+    <button id="clearBtn">Clear Trace</button>
+</div>
+
+<script>
+let points = [];
+let curveSteps = 1000;
+let path = [];
+let t = 0;
+let isPlaying = false;
+let tracePoints = [];
+let hueValue = 0;
+
+function setup() {
+    let canvas = createCanvas(windowWidth - 280, windowHeight);
+    canvas.parent(document.body);
+    colorMode(HSB, 360, 255, 255, 255);
+    generatePath();
+    
+    // UI Logic
+    document.getElementById('newPath').onclick = () => { generatePath(); tracePoints = []; };
+    document.getElementById('playBtn').onclick = () => isPlaying = !isPlaying;
+    document.getElementById('clearBtn').onclick = () => tracePoints = [];
+}
+
+function generatePath() {
+    points = [];
+    path = [];
+    let centerX = width / 2;
+    let centerY = height / 2;
+    let numPoints = 8;
+    let baseRadius = min(width, height) * 0.3;
+
+    // Create random circular points
+    for (let i = 0; i < numPoints; i++) {
+        let angle = TWO_PI / numPoints * i;
+        let r = baseRadius + random(-100, 100);
+        points.push(createVector(centerX + cos(angle) * r, centerY + sin(angle) * r));
+    }
+
+    // Pre-calculate the smoothed curve using Catmull-Rom
+    // We add padding points to the end to ensure the loop snaps perfectly
+    for (let i = 0; i <= curveSteps; i++) {
+        let pct = i / curveSteps;
+        let idx = pct * points.length;
+        
+        // P5 curvePoint needs 4 points to calculate a segment
+        let p1 = points[floor(idx) % points.length];
+        let p2 = points[floor(idx + 1) % points.length];
+        let p3 = points[floor(idx + 2) % points.length];
+        let p4 = points[floor(idx + 3) % points.length];
+        
+        let x = curvePoint(p1.x, p2.x, p3.x, p4.x, idx % 1);
+        let y = curvePoint(p1.y, p2.y, p3.y, p4.y, idx % 1);
+        
+        // Calculate tangent for orientation
+        let tx = curveTangent(p1.x, p2.x, p3.x, p4.x, idx % 1);
+        let ty = curveTangent(p1.y, p2.y, p3.y, p4.y, idx % 1);
+        let angle = atan2(ty, tx);
+        
+        path.push({ pos: createVector(x, y), angle: angle });
+    }
+}
+
+function draw() {
+    background(10, 10, 20);
+    
+    let radius = float(document.getElementById('radiusInput').value);
+    let offset = float(document.getElementById('offsetInput').value);
+    let speed = float(document.getElementById('speedInput').value);
+    let isInside = document.querySelector('input[name="side"]:checked').value === 'inside';
+    let hideUI = document.getElementById('traceOnly').checked;
+
+    if (!hideUI) {
+        // Draw the main stencil path
+        noFill();
+        stroke(255, 50);
+        strokeWeight(2);
+        beginShape();
+        for (let p of path) vertex(p.pos.x, p.pos.y);
+        endShape(CLOSE);
+    }
+
+    // Calculate current position on path
+    let curIdx = floor(t * curveSteps);
+    let current = path[curIdx];
+    
+    // Normal angle (perpendicular to the curve)
+    let normalAngle = current.angle + (isInside ? HALF_PI : -HALF_PI);
+    
+    // Rolling circle center
+    let circleCenterX = current.pos.x + cos(normalAngle) * radius;
+    let circleCenterY = current.pos.y + sin(normalAngle) * radius;
+    
+    // The tracing pen point (rotates as it moves)
+    // Distance traveled = t * TotalPathLength. Rotation = distance / radius
+    let distanceTraveled = t * 2000; // approximation of length
+    let rotation = distanceTraveled / radius;
+    let penX = circleCenterX + cos(rotation + normalAngle + PI) * offset;
+    let penY = circleCenterY + sin(rotation + normalAngle + PI) * offset;
+
+    // Store trace
+    if (isPlaying) {
+        tracePoints.push({ x: penX, y: penY, h: hueValue });
+        hueValue = (hueValue + 1) % 360;
+        t = (t + speed) % 1;
+    }
+
+    // Draw the trace
+    noFill();
+    strokeWeight(1.5);
+    beginShape();
+    for (let p of tracePoints) {
+        stroke(p.h, 200, 255);
+        vertex(p.x, p.y);
+    }
+    endShape();
+
+    if (!hideUI) {
+        // Draw the rolling circle
+        stroke(255, 100);
+        ellipse(circleCenterX, circleCenterY, radius * 2);
+        
+        // Draw center point
+        fill(255);
+        noStroke();
+        circle(circleCenterX, circleCenterY, 4);
+        
+        // Draw pen point
+        fill(hueValue, 255, 255);
+        circle(penX, penY, 6);
+        
+        // Line from center to pen
+        stroke(255, 100);
+        line(circleCenterX, circleCenterY, penX, penY);
+    }
+}
+
+function windowResized() {
+    resizeCanvas(windowWidth - 280, windowHeight);
+    generatePath();
+}
+</script>
+
+</body>
+</html>

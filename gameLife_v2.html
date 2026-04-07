@@ -1,0 +1,341 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Interactive 3D Cellular Automata</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background-color: #050505;
+            font-family: sans-serif;
+            /* Prevent text selection when clicking rapidly */
+            user-select: none; 
+        }
+        #info {
+            position: absolute;
+            top: 15px;
+            left: 15px;
+            color: rgba(255, 255, 255, 0.8);
+            pointer-events: none;
+            text-shadow: 0 2px 4px rgba(0,0,0,0.8);
+        }
+        #controls {
+            position: absolute;
+            bottom: 30px;
+            left: 50%;
+            transform: translateX(-50%);
+            display: flex;
+            gap: 15px;
+            background: rgba(20, 20, 20, 0.8);
+            padding: 15px;
+            border-radius: 8px;
+            border: 1px solid #333;
+        }
+        button {
+            background: #222;
+            color: white;
+            border: 1px solid #555;
+            padding: 10px 20px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 16px;
+            transition: all 0.2s;
+        }
+        button:hover {
+            background: #444;
+            border-color: #888;
+        }
+        button.active {
+            background: #00ffcc;
+            color: #000;
+            border-color: #00ffcc;
+        }
+    </style>
+</head>
+<body>
+    <div id="info">
+        <h2>Voxel Automata Sandbox</h2>
+        <p>Click and drag to rotate. Click cells to toggle life.</p>
+    </div>
+
+    <div id="controls">
+        <button id="playBtn" class="active">Pause</button>
+        <button id="clearBtn">Clear Board</button>
+    </div>
+
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+                "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+            }
+        }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+        // --- Configuration ---
+        const GRID_SIZE = 60;
+        const TOTAL_CELLS = GRID_SIZE * GRID_SIZE;
+        const TICK_RATE = 500;
+        const LERP_SPEED = 0.08;
+
+        // State Flags
+        let isRunning = true;
+
+        // --- Scene Setup ---
+        const scene = new THREE.Scene();
+        scene.fog = new THREE.FogExp2(0x050505, 0.015);
+
+        const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 1000);
+        camera.position.set(GRID_SIZE * 0.8, GRID_SIZE * 0.6, GRID_SIZE * 0.8);
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        document.body.appendChild(renderer.domElement);
+
+        const controls = new OrbitControls(camera, renderer.domElement);
+        controls.target.set(0, 0, 0);
+        controls.enableDamping = true; // Smooth camera movements
+
+        // --- Lighting ---
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.3);
+        scene.add(ambientLight);
+
+        const dirLight = new THREE.DirectionalLight(0xffffff, 2);
+        dirLight.position.set(50, 100, 20);
+        scene.add(dirLight);
+
+        // --- Instanced Mesh Setup ---
+        const geometry = new THREE.BoxGeometry(0.9, 1, 0.9);
+        const material = new THREE.MeshStandardMaterial({ 
+            color: 0xffffff, 
+            roughness: 0.2, 
+            metalness: 0.1 
+        });
+        
+        const instancedMesh = new THREE.InstancedMesh(geometry, material, TOTAL_CELLS);
+        scene.add(instancedMesh);
+
+        // --- Data State ---
+        let grid = new Int8Array(TOTAL_CELLS);
+        let ages = new Int32Array(TOTAL_CELLS);
+        
+        const currentHeights = new Float32Array(TOTAL_CELLS).fill(0.1);
+        const targetHeights = new Float32Array(TOTAL_CELLS).fill(0.1);
+        
+        const currentColors = Array.from({ length: TOTAL_CELLS }, () => new THREE.Color(0x111111));
+        const targetColors = Array.from({ length: TOTAL_CELLS }, () => new THREE.Color(0x111111));
+
+        const dummy = new THREE.Object3D();
+        const baseColor = new THREE.Color(0x111111);
+
+        const colorPalette = [
+            new THREE.Color(0x00ffcc), // Age 1
+            new THREE.Color(0x0066ff), // Age 3
+            new THREE.Color(0x9900ff), // Age 6
+            new THREE.Color(0xff0066), // Age 10
+            new THREE.Color(0xffcc00), // Age 15
+            new THREE.Color(0xffffff)  // Age 20+
+        ];
+
+        const offset = GRID_SIZE / 2;
+
+        // Initialize empty board to start
+        function clearBoard() {
+            for (let i = 0; i < TOTAL_CELLS; i++) {
+                grid[i] = 0;
+                ages[i] = 0;
+                targetHeights[i] = 0.1;
+                targetColors[i] = baseColor;
+            }
+        }
+        
+        // Random seed for initial load
+        function randomSeed() {
+            for (let i = 0; i < TOTAL_CELLS; i++) {
+                grid[i] = Math.random() > 0.8 ? 1 : 0;
+                ages[i] = grid[i] ? 1 : 0;
+            }
+        }
+
+        randomSeed(); // Start with a random pattern
+
+        // --- Helper Functions ---
+        function getIndex(x, z) {
+            const wrapX = (x + GRID_SIZE) % GRID_SIZE;
+            const wrapZ = (z + GRID_SIZE) % GRID_SIZE;
+            return wrapX + wrapZ * GRID_SIZE;
+        }
+
+        function countNeighbors(x, z) {
+            let sum = 0;
+            for (let i = -1; i <= 1; i++) {
+                for (let j = -1; j <= 1; j++) {
+                    if (i === 0 && j === 0) continue;
+                    sum += grid[getIndex(x + i, z + j)];
+                }
+            }
+            return sum;
+        }
+
+        function getColorForAge(age) {
+            if (age === 0) return baseColor;
+            if (age >= 20) return colorPalette[5];
+            if (age >= 15) return colorPalette[4];
+            if (age >= 10) return colorPalette[3];
+            if (age >= 6) return colorPalette[2];
+            if (age >= 3) return colorPalette[1];
+            return colorPalette[0];
+        }
+
+        // --- Simulation Logic ---
+        function updateSimulation() {
+            const nextGrid = new Int8Array(TOTAL_CELLS);
+            
+            for (let x = 0; x < GRID_SIZE; x++) {
+                for (let z = 0; z < GRID_SIZE; z++) {
+                    const idx = getIndex(x, z);
+                    const isAlive = grid[idx] === 1;
+                    const neighbors = countNeighbors(x, z);
+
+                    if (isAlive && (neighbors === 2 || neighbors === 3)) {
+                        nextGrid[idx] = 1;
+                        ages[idx]++;
+                    } else if (!isAlive && neighbors === 3) {
+                        nextGrid[idx] = 1;
+                        ages[idx] = 1;
+                    } else {
+                        nextGrid[idx] = 0;
+                        ages[idx] = 0;
+                    }
+
+                    if (nextGrid[idx] === 1) {
+                        targetHeights[idx] = Math.min(1 + (ages[idx] * 0.4), 12);
+                        targetColors[idx] = getColorForAge(ages[idx]);
+                    } else {
+                        targetHeights[idx] = 0.1;
+                        targetColors[idx] = baseColor;
+                    }
+                }
+            }
+            grid.set(nextGrid);
+        }
+
+        // --- Interactivity / Raycasting ---
+        const raycaster = new THREE.Raycaster();
+        const mouse = new THREE.Vector2();
+
+        window.addEventListener('click', (event) => {
+            // Ignore clicks if they hit the UI buttons
+            if (event.target.tagName === 'BUTTON') return;
+
+            // Calculate mouse position in normalized device coordinates (-1 to +1)
+            mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
+            mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+
+            raycaster.setFromCamera(mouse, camera);
+
+            // Check if the ray hits our instanced grid
+            const intersects = raycaster.intersectObject(instancedMesh);
+
+            if (intersects.length > 0) {
+                // The instanceId corresponds exactly to our 1D array index
+                const instanceId = intersects[0].instanceId;
+
+                // Toggle cell state
+                if (grid[instanceId] === 0) {
+                    // Birth
+                    grid[instanceId] = 1;
+                    ages[instanceId] = 1;
+                    targetHeights[instanceId] = 1.4; // Initial pop-up height
+                    targetColors[instanceId] = getColorForAge(1);
+                } else {
+                    // Kill
+                    grid[instanceId] = 0;
+                    ages[instanceId] = 0;
+                    targetHeights[instanceId] = 0.1;
+                    targetColors[instanceId] = baseColor;
+                }
+            }
+        });
+
+        // --- UI Listeners ---
+        const playBtn = document.getElementById('playBtn');
+        const clearBtn = document.getElementById('clearBtn');
+
+        playBtn.addEventListener('click', () => {
+            isRunning = !isRunning;
+            if (isRunning) {
+                playBtn.textContent = "Pause";
+                playBtn.classList.add("active");
+            } else {
+                playBtn.textContent = "Play";
+                playBtn.classList.remove("active");
+            }
+        });
+
+        clearBtn.addEventListener('click', () => {
+            isRunning = false; // Auto-pause when clearing
+            playBtn.textContent = "Play";
+            playBtn.classList.remove("active");
+            clearBoard();
+        });
+
+        // --- Render & Animation Loop ---
+        let lastTick = 0;
+
+        function animate(time) {
+            requestAnimationFrame(animate);
+            controls.update();
+
+            // Only run the Conway logic if the simulation is playing
+            if (isRunning && time - lastTick > TICK_RATE) {
+                updateSimulation();
+                lastTick = time;
+            }
+
+            // Visual Lerping (Always runs, even when paused, so clicks animate smoothly)
+            for (let x = 0; x < GRID_SIZE; x++) {
+                for (let z = 0; z < GRID_SIZE; z++) {
+                    const idx = getIndex(x, z);
+                    
+                    currentHeights[idx] += (targetHeights[idx] - currentHeights[idx]) * LERP_SPEED;
+                    currentColors[idx].lerp(targetColors[idx], LERP_SPEED);
+
+                    const posX = x - offset;
+                    const posZ = z - offset;
+                    const posY = currentHeights[idx] / 2; 
+
+                    dummy.position.set(posX, posY, posZ);
+                    dummy.scale.set(1, currentHeights[idx], 1);
+                    dummy.updateMatrix();
+
+                    instancedMesh.setMatrixAt(idx, dummy.matrix);
+                    instancedMesh.setColorAt(idx, currentColors[idx]);
+                }
+            }
+
+            instancedMesh.instanceMatrix.needsUpdate = true;
+            if (instancedMesh.instanceColor) {
+                instancedMesh.instanceColor.needsUpdate = true;
+            }
+
+            renderer.render(scene, camera);
+        }
+
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+        requestAnimationFrame(animate);
+    </script>
+</body>
+</html>

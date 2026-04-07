@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AR Gesture Cigarette</title>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.0/p5.min.js"></script>
+  <style>
+    body { margin: 0; background: #000; overflow: hidden; }
+    canvas { display: block; }
+    #video-ui { position: absolute; bottom: 10px; left: 10px; color: white; font-family: sans-serif; pointer-events: none; }
+  </style>
+</head>
+<body>
+  <div id="video-ui">Point camera at hand. Hold index & middle fingers together.</div>
+<script>
+let capture;
+let hands;
+let predictions = [];
+let smoke = [];
+let paperHeight = 150; 
+let ashHeight = 0;
+let isBurning = false;
+
+function setup() {
+  createCanvas(windowWidth, windowHeight);
+  
+  // Setup Webcam
+  capture = createCapture(VIDEO);
+  capture.size(width, height);
+  capture.hide();
+
+  // Setup MediaPipe
+  hands = new Hands({
+    locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+  });
+
+  hands.setOptions({
+    maxNumHands: 1,
+    modelComplexity: 1,
+    minDetectionConfidence: 0.7,
+    minTrackingConfidence: 0.7
+  });
+
+  hands.onResults(onResults);
+
+  const camera = new Camera(capture.elt, {
+    onFrame: async () => {
+      await hands.send({image: capture.elt});
+    },
+    width: 640,
+    height: 480
+  });
+  camera.start();
+}
+
+function onResults(results) {
+  predictions = results.multiHandLandmarks;
+}
+
+function draw() {
+  // Mirror the video feed
+  push();
+  translate(width, 0);
+  scale(-1, 1);
+  image(capture, 0, 0, width, height);
+  pop();
+
+  if (predictions && predictions.length > 0) {
+    let hand = predictions[0];
+    
+    // Index Tip (8) and Middle Tip (12)
+    let index = hand[8];
+    let middle = hand[12];
+
+    // Convert normalized coordinates to screen space
+    let x1 = (1 - index.x) * width;
+    let y1 = index.y * height;
+    let x2 = (1 - middle.x) * width;
+    let y2 = middle.y * height;
+
+    // Center point between fingers
+    let cx = (x1 + x2) / 2;
+    let cy = (y1 + y2) / 2;
+    
+    // Distance between fingers to detect "holding" gesture
+    let d = dist(x1, y1, x2, y2);
+    let angle = atan2(y2 - y1, x2 - x1);
+
+    if (d < 80) { // If fingers are close enough
+      isBurning = true;
+      drawCigarette(cx, cy, angle + PI/2);
+    }
+  }
+
+  // Handle Smoke
+  for (let i = smoke.length - 1; i >= 0; i--) {
+    smoke[i].update();
+    smoke[i].show();
+    if (smoke[i].finished()) smoke.splice(i, 1);
+  }
+}
+
+function drawCigarette(x, y, rot) {
+  const cigWidth = 20;
+  const filterHeight = 50;
+  
+  // Consumption logic
+  if (paperHeight > 0) {
+    paperHeight -= 0.05;
+    ashHeight += 0.05;
+    if (ashHeight > 40) ashHeight = 0; // Ash falls
+  }
+
+  push();
+  translate(x, y);
+  rotate(rot);
+  
+  // Draw Filter
+  noStroke();
+  fill(180, 95, 40);
+  rect(-cigWidth/2, 0, cigWidth, filterHeight);
+
+  // Draw Paper
+  fill(255);
+  rect(-cigWidth/2, -paperHeight, cigWidth, paperHeight);
+
+  // Draw Ash
+  fill(80);
+  rect(-cigWidth/2, -paperHeight - ashHeight, cigWidth, ashHeight);
+
+  // Draw The Cherry (Glowing Tip)
+  if (paperHeight > 0) {
+    let tipY = -paperHeight;
+    for (let r = 15; r > 0; r -= 3) {
+      fill(255, 60, 0, map(r, 0, 15, 200, 0));
+      ellipse(0, tipY, cigWidth + r, 10);
+    }
+    // Generate smoke from world-space coordinates
+    // We need to calculate where the tip is in global space to emit smoke
+    let smokeX = x + cos(rot - PI/2) * paperHeight;
+    let smokeY = y + sin(rot - PI/2) * paperHeight;
+    generateSmoke(smokeX, smokeY);
+  }
+  pop();
+}
+
+function generateSmoke(x, y) {
+  if (frameCount % 2 == 0) {
+    smoke.push(new Particle(x, y));
+  }
+}
+
+class Particle {
+  constructor(x, y) {
+    this.x = x;
+    this.y = y;
+    this.vx = random(-0.5, 0.5);
+    this.vy = random(-1, -2);
+    this.alpha = 150;
+    this.size = random(5, 12);
+  }
+  finished() { return this.alpha < 0; }
+  update() {
+    this.x += this.vx;
+    this.y += this.vy;
+    this.alpha -= 1.5;
+    this.size += 0.2;
+  }
+  show() {
+    noStroke();
+    fill(220, 220, 230, this.alpha);
+    ellipse(this.x, this.y, this.size);
+  }
+}
+
+function windowResized() {
+  resizeCanvas(windowWidth, windowHeight);
+}
+</script>
+</body>
+</html>

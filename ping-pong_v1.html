@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>3D Hand-Tracked Pong</title>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+    <style>
+        body { margin: 0; background: #000; overflow: hidden; font-family: 'Courier New', Courier, monospace; }
+        #ui {
+            position: absolute; top: 20px; width: 100%; text-align: center;
+            color: #00ffcc; pointer-events: none; z-index: 10;
+        }
+        /* Mirror the video so it feels natural */
+        #input_video { transform: scaleX(-1); position: fixed; bottom: 10px; right: 10px; width: 160px; height: 120px; border: 2px solid #00ffcc; border-radius: 8px; opacity: 0.7; }
+        canvas { display: block; }
+        #loading { position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); color: #00ffcc; font-size: 20px; }
+    </style>
+</head>
+<body>
+    <div id="loading">Initialising AI Hand Tracking...</div>
+    <div id="ui">
+        <h1>NEON HAND PONG</h1>
+        <div style="font-size: 24px;">YOU: <span id="pScore">0</span> | CPU: <span id="cScore">0</span></div>
+    </div>
+    
+    <video id="input_video" autoplay playsinline></video>
+
+    <script type="importmap">
+        { "imports": { "three": "https://unpkg.com/three@0.160.0/build/three.module.js" } }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+
+        // --- Three.js Setup ---
+        const scene = new THREE.Scene();
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        document.body.appendChild(renderer.domElement);
+
+        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+        camera.position.set(0, 6, 12);
+        camera.lookAt(0, 0, -2);
+
+        // --- Game Elements ---
+        const TABLE_WIDTH = 12;
+        const TABLE_DEPTH = 20;
+        let pScore = 0, cScore = 0;
+
+        const table = new THREE.Mesh(
+            new THREE.BoxGeometry(TABLE_WIDTH, 0.2, TABLE_DEPTH),
+            new THREE.MeshStandardMaterial({ color: 0x050505, roughness: 0.2 })
+        );
+        scene.add(table);
+
+        const ball = new THREE.Mesh(
+            new THREE.SphereGeometry(0.3, 32, 32),
+            new THREE.MeshStandardMaterial({ color: 0xffffff, emissive: 0xffffff })
+        );
+        ball.position.y = 0.5;
+        scene.add(ball);
+        let ballVel = new THREE.Vector3(0.08, 0, -0.15);
+
+        const paddleGeo = new THREE.BoxGeometry(2.5, 0.6, 0.5);
+        const playerPaddle = new THREE.Mesh(paddleGeo, new THREE.MeshStandardMaterial({ color: 0x00ffcc, emissive: 0x00ffcc }));
+        playerPaddle.position.set(0, 0.5, TABLE_DEPTH / 2);
+        scene.add(playerPaddle);
+
+        const cpuPaddle = new THREE.Mesh(paddleGeo, new THREE.MeshStandardMaterial({ color: 0xff0055, emissive: 0xff0055 }));
+        cpuPaddle.position.set(0, 0.5, -TABLE_DEPTH / 2);
+        scene.add(cpuPaddle);
+
+        scene.add(new THREE.AmbientLight(0xffffff, 0.4));
+        const light = new THREE.PointLight(0x00ffcc, 150, 40);
+        light.position.set(0, 5, 0);
+        scene.add(light);
+
+        // --- MediaPipe Hand Tracking ---
+        const videoElement = document.getElementById('input_video');
+        const loadingScreen = document.getElementById('loading');
+        
+        function onResults(results) {
+            loadingScreen.style.display = 'none';
+            if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+                // Use the first hand detected
+                const hand = results.multiHandLandmarks[0];
+                // Landmark 9 is the middle of the palm (MCP of middle finger)
+                // We mirror the X coordinate (1 - x) because the webcam is mirrored
+                const handX = 1 - hand[9].x; 
+                
+                // Map 0-1 range to table width
+                const targetX = (handX - 0.5) * TABLE_WIDTH * 1.5;
+                playerPaddle.position.x = THREE.MathUtils.lerp(playerPaddle.position.x, targetX, 0.2);
+            }
+        }
+
+        const hands = new Hands({
+            locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+        });
+
+        hands.setOptions({
+            maxNumHands: 1,
+            modelComplexity: 1,
+            minDetectionConfidence: 0.7,
+            minTrackingConfidence: 0.7
+        });
+        hands.onResults(onResults);
+
+        const cam = new Camera(videoElement, {
+            onFrame: async () => { await hands.send({image: videoElement}); },
+            width: 640, height: 480
+        });
+        cam.start();
+
+        // --- Core Loop ---
+        function animate() {
+            requestAnimationFrame(animate);
+
+            // Ball Physics
+            ball.position.add(ballVel);
+            if (Math.abs(ball.position.x) > TABLE_WIDTH/2) ballVel.x *= -1;
+
+            // CPU AI
+            cpuPaddle.position.x += (ball.position.x - cpuPaddle.position.x) * 0.07;
+
+            // Collisions
+            if (ball.position.z > (TABLE_DEPTH/2 - 0.5) && Math.abs(ball.position.x - playerPaddle.position.x) < 1.5) {
+                ballVel.z *= -1.05;
+                ballVel.x += (ball.position.x - playerPaddle.position.x) * 0.2;
+                ball.position.z = TABLE_DEPTH/2 - 0.6;
+            }
+            if (ball.position.z < (-TABLE_DEPTH/2 + 0.5) && Math.abs(ball.position.x - cpuPaddle.position.x) < 1.5) {
+                ballVel.z *= -1.05;
+                ball.position.z = -TABLE_DEPTH/2 + 0.6;
+            }
+
+            // Scoring
+            if (Math.abs(ball.position.z) > TABLE_DEPTH/2 + 1) {
+                if (ball.position.z > 0) { cScore++; document.getElementById('cScore').innerText = cScore; }
+                else { pScore++; document.getElementById('pScore').innerText = pScore; }
+                ball.position.set(0, 0.5, 0);
+                ballVel.set(0.08, 0, ball.position.z > 0 ? -0.15 : 0.15);
+            }
+
+            renderer.render(scene, camera);
+        }
+
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+        animate();
+    </script>
+</body>
+</html>

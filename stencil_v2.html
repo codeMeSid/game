@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Manual Stencil Tracer</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.0/p5.js"></script>
+    <style>
+        body { margin: 0; padding: 0; background: #0a0a0a; color: #eee; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; overflow: hidden; display: flex; }
+        #controls { width: 300px; padding: 20px; background: #1a1a1a; height: 100vh; box-sizing: border-box; display: flex; flex-direction: column; gap: 15px; border-right: 1px solid #333; z-index: 10; box-shadow: 5px 0 15px rgba(0,0,0,0.5); }
+        .control-group { display: flex; flex-direction: column; gap: 8px; border-bottom: 1px solid #333; padding-bottom: 15px; }
+        label { font-size: 11px; text-transform: uppercase; letter-spacing: 1px; color: #888; }
+        button { padding: 10px; cursor: pointer; background: #333; border: 1px solid #444; color: white; border-radius: 4px; transition: 0.2s; }
+        button:hover { background: #444; border-color: #666; }
+        button.active { background: #2e7d32; border-color: #4caf50; }
+        input[type=range] { width: 100%; accent-color: #4caf50; }
+        .radio-group { display: flex; gap: 15px; font-size: 14px; }
+        h3 { margin-top: 0; color: #4caf50; }
+        .hint { font-size: 11px; color: #666; font-style: italic; }
+    </style>
+</head>
+<body>
+
+<div id="controls">
+    <h3>Stencil Studio</h3>
+    
+    <div class="control-group">
+        <button id="drawModeBtn">Mode: Draw Stencil</button>
+        <p class="hint">Click & drag on canvas to draw your custom loop.</p>
+    </div>
+    
+    <div class="control-group">
+        <label>Circle Radius</label>
+        <input type="range" id="radiusInput" min="5" max="120" value="40">
+        <label>Pen Offset (Point Position)</label>
+        <input type="range" id="offsetInput" min="0" max="200" value="50">
+    </div>
+
+    <div class="control-group">
+        <label>Speed</label>
+        <input type="range" id="speedInput" min="0.001" max="0.03" step="0.001" value="0.005">
+        <label>Center Rotation Offset</label>
+        <input type="range" id="rotInput" min="0" max="6.28" step="0.1" value="0">
+    </div>
+
+    <div class="radio-group">
+        <label><input type="radio" name="side" value="inside" checked> Inside</label>
+        <label><input type="radio" name="side" value="outside"> Outside</label>
+    </div>
+
+    <div class="control-group">
+        <label><input type="checkbox" id="traceOnly"> Trace Only (Hide UI)</label>
+    </div>
+
+    <button id="playBtn">▶ Play Animation</button>
+    <button id="clearBtn">Clear Trace</button>
+    <button id="saveBtn">Save Artwork</button>
+</div>
+
+<script>
+let rawPoints = [];
+let path = [];
+let t = 0;
+let isPlaying = false;
+let isDrawing = false;
+let tracePoints = [];
+let hueValue = 0;
+let mode = 'draw'; // 'draw' or 'play'
+
+function setup() {
+    let canvas = createCanvas(windowWidth - 300, windowHeight);
+    canvas.parent(document.body);
+    colorMode(HSB, 360, 255, 255, 255);
+    
+    // UI Events
+    document.getElementById('drawModeBtn').onclick = toggleMode;
+    document.getElementById('playBtn').onclick = () => isPlaying = !isPlaying;
+    document.getElementById('clearBtn').onclick = () => tracePoints = [];
+    document.getElementById('saveBtn').onclick = () => saveCanvas('my_trace', 'png');
+}
+
+function toggleMode() {
+    mode = (mode === 'draw') ? 'play' : 'draw';
+    let btn = document.getElementById('drawModeBtn');
+    btn.innerText = mode === 'draw' ? 'Mode: Draw Stencil' : 'Mode: Play Path';
+    btn.classList.toggle('active');
+    if(mode === 'draw') {
+        isPlaying = false;
+        rawPoints = [];
+        path = [];
+    }
+}
+
+function mousePressed() {
+    if (mouseX > 0 && mode === 'draw') {
+        rawPoints = [];
+        isDrawing = true;
+        tracePoints = [];
+    }
+}
+
+function mouseDragged() {
+    if (isDrawing) {
+        rawPoints.push(createVector(mouseX, mouseY));
+    }
+}
+
+function mouseReleased() {
+    if (isDrawing) {
+        isDrawing = false;
+        processPath();
+    }
+}
+
+function processPath() {
+    if (rawPoints.length < 5) return;
+    path = [];
+    let steps = 1000;
+    
+    for (let i = 0; i <= steps; i++) {
+        let pct = i / steps;
+        let idx = pct * rawPoints.length;
+        
+        // Loop indices for Catmull-Rom
+        let i0 = floor(idx) % rawPoints.length;
+        let i1 = floor(idx + 1) % rawPoints.length;
+        let i2 = floor(idx + 2) % rawPoints.length;
+        let i3 = floor(idx + 3) % rawPoints.length;
+        
+        let p0 = rawPoints[i0];
+        let p1 = rawPoints[i1];
+        let p2 = rawPoints[i2];
+        let p3 = rawPoints[i3];
+        
+        let x = curvePoint(p0.x, p1.x, p2.x, p3.x, idx % 1);
+        let y = curvePoint(p0.y, p1.y, p2.y, p3.y, idx % 1);
+        
+        let tx = curveTangent(p0.x, p1.x, p2.x, p3.x, idx % 1);
+        let ty = curveTangent(p0.y, p1.y, p2.y, p3.y, idx % 1);
+        
+        path.push({ pos: createVector(x, y), angle: atan2(ty, tx) });
+    }
+}
+
+function draw() {
+    background(5, 5, 10);
+    
+    let radius = float(document.getElementById('radiusInput').value);
+    let offset = float(document.getElementById('offsetInput').value);
+    let speed = float(document.getElementById('speedInput').value);
+    let rotOffset = float(document.getElementById('rotInput').value);
+    let isInside = document.querySelector('input[name="side"]:checked').value === 'inside';
+    let hideUI = document.getElementById('traceOnly').checked;
+
+    // Draw Drawing Preview
+    if (mode === 'draw' && rawPoints.length > 0) {
+        noFill();
+        stroke(0, 255, 255, 150);
+        beginShape();
+        for(let p of rawPoints) vertex(p.x, p.y);
+        endShape();
+    }
+
+    if (path.length > 0) {
+        if (!hideUI) {
+            noFill();
+            stroke(255, 30);
+            beginShape();
+            for (let p of path) vertex(p.pos.x, p.pos.y);
+            endShape(CLOSE);
+        }
+
+        let curIdx = floor(t * (path.length - 1));
+        let current = path[curIdx];
+        
+        // Geometry
+        let normalAngle = current.angle + (isInside ? HALF_PI : -HALF_PI);
+        let circleCenterX = current.pos.x + cos(normalAngle) * radius;
+        let circleCenterY = current.pos.y + sin(normalAngle) * radius;
+        
+        // Applying the rotation offset to the pen calculation
+        let distanceTraveled = t * 3000; 
+        let rotation = (distanceTraveled / radius) + rotOffset;
+        
+        let penX = circleCenterX + cos(rotation + normalAngle + PI) * offset;
+        let penY = circleCenterY + sin(rotation + normalAngle + PI) * offset;
+
+        if (isPlaying) {
+            tracePoints.push({ x: penX, y: penY, h: hueValue });
+            hueValue = (hueValue + 0.5) % 360;
+            t = (t + speed) % 1;
+        }
+
+        // Render Trace
+        noFill();
+        strokeWeight(1.5);
+        beginShape();
+        for (let i = 0; i < tracePoints.length; i++) {
+            let tp = tracePoints[i];
+            stroke(tp.h, 180, 255);
+            vertex(tp.x, tp.y);
+        }
+        endShape();
+
+        if (!hideUI) {
+            // Guide Circle
+            stroke(255, 80);
+            strokeWeight(1);
+            ellipse(circleCenterX, circleCenterY, radius * 2);
+            
+            // Center point
+            fill(255);
+            circle(circleCenterX, circleCenterY, 5);
+            
+            // Pen line
+            stroke(255, 100);
+            line(circleCenterX, circleCenterY, penX, penY);
+            fill(hueValue, 255, 255);
+            circle(penX, penY, 8);
+        }
+    }
+}
+
+function windowResized() {
+    resizeCanvas(windowWidth - 300, windowHeight);
+}
+</script>
+
+</body>
+</html>

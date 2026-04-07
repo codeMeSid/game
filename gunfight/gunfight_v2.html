@@ -1,0 +1,286 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Desperado: The Long Walk</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.4.0/p5.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.4.0/addons/p5.sound.min.js"></script>
+    <script src="https://unpkg.com/ml5@0.12.2/dist/ml5.min.js"></script>
+    <style>
+        body { margin: 0; background: #0b0600; display: flex; justify-content: center; align-items: center; font-family: 'Courier New', monospace; overflow: hidden; color: gold; }
+        #overlay { position: absolute; background: rgba(15, 8, 0, 0.95); border: 3px solid #8b0000; padding: 30px; width: 450px; text-align: center; z-index: 100; box-shadow: 0 0 100px #000; border-radius: 10px; }
+        .btn { background: #8b0000; color: white; padding: 15px 40px; cursor: pointer; font-weight: bold; border: none; margin-top: 20px; letter-spacing: 3px; display: none; }
+        .loader { border: 4px solid #332211; border-top: 4px solid gold; border-radius: 50%; width: 40px; height: 40px; animation: spin 1s linear infinite; margin: 20px auto; }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+    </style>
+</head>
+<body>
+
+    <div id="overlay">
+        <h1 style="color: #ff4500; text-shadow: 3px 3px #000;">STREETS OF CHIHUAHUA</h1>
+        <div id="loading-section">
+            <div class="loader"></div>
+            <p id="load-text">Waking up the AI...</p>
+        </div>
+        <div id="instructions" style="display:none; text-align: left; font-size: 14px;">
+            <p>• <b>WALK:</b> Wait for the cowboys to take 10 paces.</p>
+            <p>• <b>HOLSTER:</b> Hold hand <b>LOW</b> to start the zoom.</p>
+            <p>• <b>DODGE:</b> Wink one eye to lean away from bullets.</p>
+            <p>• <b>FIRE:</b> Flick hand <b>UP</b> on the Green Signal.</p>
+            <center><button class="btn" id="startBtn">DRAW WEAPON</button></center>
+        </div>
+    </div>
+
+    <script>
+        let handpose, facemesh, video;
+        let hands = [], faces = [];
+        let gameState = "LOADING"; 
+        let signalTime = 0, playerHealth = 100, enemyHealth = 100;
+        let cameraZoom = 1, walkProgress = 0, bloodAlpha = 0;
+        let playerOffset = 0, crossX = 400, crossY = 300, ammo = 6;
+        let osc, noise, envelope;
+        let modelsLoaded = 0;
+
+        function setup() {
+            createCanvas(800, 600);
+            video = createCapture(VIDEO);
+            video.size(640, 480);
+            video.hide();
+
+            // Audio synthesis
+            osc = new p5.Oscillator('sine');
+            noise = new p5.Noise('brown');
+            envelope = new p5.Envelope();
+            envelope.setADSR(0.001, 0.2, 0.1, 0.5);
+
+            // Model initialization with safety checks
+            handpose = ml5.handpose(video, () => { 
+                modelsLoaded++; 
+                checkLoading();
+                handpose.on("predict", r => hands = r);
+            });
+
+            facemesh = ml5.facemesh(video, () => { 
+                modelsLoaded++; 
+                checkLoading();
+                facemesh.on("predict", r => faces = r);
+            });
+
+            document.getElementById('startBtn').onclick = beginGame;
+        }
+
+        function checkLoading() {
+            if(modelsLoaded >= 2) {
+                document.getElementById('loading-section').style.display = 'none';
+                document.getElementById('instructions').style.display = 'block';
+                document.getElementById('startBtn').style.display = 'inline-block';
+            }
+        }
+
+        function beginGame() {
+            // Force Audio Resume
+            if (getAudioContext().state !== 'running') {
+                getAudioContext().resume();
+            }
+            document.getElementById('overlay').style.display = 'none';
+            resetDuel();
+        }
+
+        function resetDuel() {
+            gameState = "WALKING";
+            walkProgress = 0;
+            playerHealth = 100;
+            enemyHealth = 100;
+            cameraZoom = 1;
+            ammo = 6;
+            bloodAlpha = 0;
+            noise.start();
+            noise.amp(0.05, 2);
+        }
+
+        function draw() {
+            background(20, 10, 5);
+            if (gameState === "LOADING") return;
+
+            handleAI();
+
+            // 2.5D Environment Camera
+            push();
+            if (gameState === "STEADY" || gameState === "DRAW") {
+                cameraZoom = lerp(cameraZoom, 3.2, 0.002);
+                if (frameCount % floor(map(cameraZoom, 1, 3.2, 60, 12)) === 0) playHeartbeat();
+            }
+            
+            // Apply camera sway and lean
+            translate(width/2 - (playerOffset * 0.4), height/2);
+            scale(cameraZoom);
+            translate(-width/2, -height/2);
+
+            drawWorld();
+            drawActors();
+            pop();
+
+            drawCrosshair();
+            drawHUD();
+            drawDamageSplatter();
+        }
+
+        function handleAI() {
+            // Wink Detection (Dodge)
+            if (faces.length > 0) {
+                let f = faces[0].annotations;
+                let lE = dist(f.leftEyeUpper0[3][0], f.leftEyeUpper0[3][1], f.leftEyeLower0[3][0], f.leftEyeLower0[3][1]);
+                let rE = dist(f.rightEyeUpper0[3][0], f.rightEyeUpper0[3][1], f.rightEyeLower0[3][0], f.rightEyeLower0[3][1]);
+                playerOffset = lE < 3.2 ? -180 : (rE < 3.2 ? 180 : 0);
+            }
+
+            // Hand Detection (Aim & Fire)
+            if (hands.length > 0) {
+                let palm = hands[0].annotations.palmBase[0];
+                crossX = lerp(crossX, map(palm[0], 640, 0, 0, width), 0.2);
+                crossY = lerp(crossY, map(palm[1], 0, 480, 0, height), 0.2);
+
+                if (gameState === "WAITING" && crossY > 450) {
+                    gameState = "STEADY";
+                    signalTime = millis() + random(3500, 7000);
+                }
+
+                // Shooting Logic
+                if (crossY < 250 && ammo > 0 && (gameState === "STEADY" || gameState === "DRAW")) {
+                    if (gameState === "STEADY") {
+                        gameState = "JAMMED";
+                        playClick(); 
+                    } else if (gameState === "DRAW") {
+                        ammo--;
+                        playGunshot(400, 2);
+                        if (dist(crossX, crossY, width/2, height/2) < 50) {
+                            enemyHealth = 0;
+                            gameState = "WON";
+                        }
+                    }
+                }
+            }
+
+            if (gameState === "STEADY" && millis() > signalTime) gameState = "DRAW";
+
+            // Enemy Shooting
+            if (gameState === "DRAW" && millis() > signalTime + 550 && enemyHealth > 0) {
+                if (playerOffset === 0) {
+                    playerHealth -= 30;
+                    bloodAlpha = 255;
+                    playGunshot(150, 3);
+                }
+                if (playerHealth <= 0) {
+                    gameState = "LOST";
+                    noise.amp(0, 1);
+                }
+            }
+        }
+
+        function drawWorld() {
+            fill(80, 50, 25); rect(0, 400, width, 200); // Dusty Floor
+            fill(255, 120, 0, 30); ellipse(width/2, 380, 500, 500); // Sunset
+        }
+
+        function drawActors() {
+            if (gameState === "WALKING") {
+                walkProgress += 0.004;
+                if (walkProgress >= 1) {
+                    gameState = "WAITING";
+                    noise.amp(0.1, 1);
+                }
+            }
+
+            // Calculations for the "Walking Away"
+            let playerX = lerp(width/2, width/2 - 200, walkProgress);
+            let enemyX = lerp(width/2, width/2 + 200, walkProgress);
+            let scaleChar = map(walkProgress, 0, 1, 1.2, 1);
+
+            // Enemy (Facing Away then Turning)
+            push();
+            translate(enemyX, 450);
+            scale(scaleChar);
+            fill(30); rect(-30, -140, 60, 140); // Coat
+            fill(240, 190, 160); ellipse(0, -160, 40, 50); // Head
+            if (walkProgress > 0.95) { // Turn around
+                fill(0); ellipse(-10, -165, 5, 3); ellipse(10, -165, 5, 3);
+            }
+            if (enemyHealth <= 0) {
+                fill(150, 0, 0); ellipse(0, -100, 30, 40);
+            }
+            pop();
+
+            // Player (Visualizing your back)
+            push();
+            translate(playerX, 550);
+            fill(60, 40, 20); rect(-50, -120, 100, 180);
+            pop();
+        }
+
+        function drawCrosshair() {
+            if (gameState === "WALKING") return;
+            push(); translate(crossX, crossY);
+            let targetOn = dist(crossX, crossY, width/2, height/2) < 50;
+            stroke(targetOn ? 'red' : 'white');
+            strokeWeight(2); noFill();
+            ellipse(0, 0, 40, 40); line(-25, 0, 25, 0); line(0, -25, 0, 25);
+            pop();
+        }
+
+        function drawHUD() {
+            textAlign(CENTER); textSize(40);
+            if (gameState === "WALKING") {
+                fill(255); text("TAKE YOUR POSITIONS...", width/2, 100);
+            } else if (gameState === "WAITING") {
+                fill(255, 200, 0); text("HOLSTER WEAPON (HAND LOW)", width/2, 100);
+            } else if (gameState === "DRAW") {
+                fill(0, 255, 0); text("FUEGO!", width/2, 100);
+            } else if (gameState === "JAMMED") {
+                fill(255, 0, 0); text("GUN JAMMED!", width/2, 100);
+            }
+
+            // Ammo Slots
+            for(let i=0; i<6; i++) {
+                fill(i < ammo ? 'gold' : 40);
+                rect(30 + i*25, height - 50, 15, 35);
+            }
+        }
+
+        function drawDamageSplatter() {
+            if (playerHealth < 100) {
+                fill(180, 0, 0, bloodAlpha); rect(0, 0, width, height);
+                bloodAlpha *= 0.95;
+                
+                // Vignette/Tunnel Vision
+                let d = map(playerHealth, 100, 0, 0, 300);
+                noFill(); stroke(0); strokeWeight(d);
+                rect(0, 0, width, height);
+            }
+            if (gameState === "LOST") {
+                background(0); fill(255, 0, 0); textSize(60); text("BURIED", width/2, height/2);
+                textSize(20); fill(255); text("SPACE TO RE-DUEL", width/2, height/2 + 60);
+            }
+            if (gameState === "WON") {
+                fill(255, 215, 0); text("LEGEND", width/2, height/2);
+            }
+        }
+
+        function playHeartbeat() {
+            osc.freq(60); osc.start();
+            envelope.setRange(0.5, 0); envelope.play(osc, 0, 0.1);
+        }
+
+        function playGunshot(f, r) {
+            osc.freq(f); osc.start();
+            envelope.setRange(r, 0); envelope.play(osc, 0, 0.2);
+        }
+
+        function playClick() {
+            osc.freq(100); osc.start();
+            envelope.setRange(0.2, 0); envelope.play(osc, 0, 0.05);
+        }
+
+        function keyPressed() { if (key === ' ') resetDuel(); }
+    </script>
+</body>
+</html>

@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Zero-Touch Hand String</title>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js"></script>
+    <style>
+        body { margin: 0; padding: 0; background: #000; overflow: hidden; cursor: crosshair; }
+        /* Mirror the view so it feels natural */
+        canvas { display: block; width: 100vw; height: 100vh; transform: scaleX(-1); }
+        #status {
+            position: absolute; bottom: 20px; left: 20px; 
+            color: rgba(255,255,255,0.3); font-family: sans-serif; font-size: 12px;
+            pointer-events: none;
+        }
+    </style>
+</head>
+<body>
+    <div id="status">Waiting for camera... (If stuck, click once anywhere)</div>
+    <video id="input_video" style="display:none;" autoplay muted playsinline></video>
+    <canvas id="output_canvas"></canvas>
+
+    <script>
+        const videoElement = document.getElementById('input_video');
+        const canvasElement = document.getElementById('output_canvas');
+        const canvasCtx = canvasElement.getContext('2d');
+        const statusText = document.getElementById('status');
+
+        // Physics Config
+        const SEGMENT_COUNT = 8;
+        const REST_LENGTH = 35;
+        const GRAVITY = 0.6;
+        const FRICTION = 0.95;
+        const PINCH_THRESHOLD = 0.05;
+
+        let width, height;
+        function resize() {
+            width = canvasElement.width = window.innerWidth;
+            height = canvasElement.height = window.innerHeight;
+        }
+        window.addEventListener('resize', resize);
+        resize();
+
+        let points = [];
+        for (let i = 0; i < SEGMENT_COUNT; i++) {
+            points.push({ x: 0, y: 0, oldX: 0, oldY: 0, grabbedBy: null });
+        }
+
+        let wasPinching = false;
+
+        function updatePhysics() {
+            points.forEach(p => {
+                if (p.grabbedBy !== null) return;
+                let vx = (p.x - p.oldX) * FRICTION;
+                let vy = (p.y - p.oldY) * FRICTION;
+                p.oldX = p.x; p.oldY = p.y;
+                p.x += vx; p.y += vy + GRAVITY;
+            });
+
+            for (let n = 0; n < 8; n++) {
+                for (let i = 0; i < points.length - 1; i++) {
+                    let p1 = points[i], p2 = points[i+1];
+                    let dx = p2.x - p1.x, dy = p2.y - p1.y;
+                    let dist = Math.sqrt(dx*dx + dy*dy);
+                    let diff = (REST_LENGTH - dist) / dist;
+                    let offX = dx * diff * 0.5, offY = dy * diff * 0.5;
+                    if (p1.grabbedBy === null) { p1.x -= offX; p1.y -= offY; }
+                    if (p2.grabbedBy === null) { p2.x += offX; p2.y += offY; }
+                }
+            }
+        }
+
+        function render(results) {
+            statusText.innerText = results.multiHandLandmarks.length > 0 ? "Hands Detected" : "Scanning for hands...";
+            canvasCtx.save();
+            canvasCtx.clearRect(0, 0, width, height);
+
+            let pinches = [];
+            if (results.multiHandLandmarks) {
+                results.multiHandLandmarks.forEach((landmarks, idx) => {
+                    drawConnectors(canvasCtx, landmarks, HAND_CONNECTIONS, {color: '#222', lineWidth: 2});
+                    drawLandmarks(canvasCtx, landmarks, {color: '#fff', lineWidth: 1, radius: 2});
+
+                    const thumb = landmarks[4], index = landmarks[8];
+                    const d = Math.sqrt(Math.pow(thumb.x-index.x,2)+Math.pow(thumb.y-index.y,2));
+                    if (d < PINCH_THRESHOLD) {
+                        pinches.push({x: index.x * width, y: index.y * height, id: idx});
+                    }
+                });
+            }
+
+            if (pinches.length > 0) {
+                if (!wasPinching) {
+                    points.forEach(p => { 
+                        p.x = p.oldX = pinches[0].x; 
+                        p.y = p.oldY = pinches[0].y; 
+                    });
+                }
+                wasPinching = true;
+                points.forEach(p => p.grabbedBy = null);
+                pinches.sort((a,b) => a.x - b.x);
+                
+                points[0].x = pinches[0].x; points[0].y = pinches[0].y;
+                points[0].grabbedBy = pinches[0].id;
+
+                if (pinches.length > 1) {
+                    const last = points.length - 1;
+                    points[last].x = pinches[1].x; points[last].y = pinches[1].y;
+                    points[last].grabbedBy = pinches[1].id;
+                }
+
+                updatePhysics();
+                
+                // Draw String
+                for (let i = 0; i < points.length - 1; i++) {
+                    let p1 = points[i], p2 = points[i+1];
+                    let dist = Math.sqrt((p1.x-p2.x)**2 + (p1.y-p2.y)**2);
+                    let stress = Math.min(Math.max((dist - REST_LENGTH) / 60, 0), 1);
+                    canvasCtx.beginPath();
+                    canvasCtx.moveTo(p1.x, p1.y);
+                    canvasCtx.lineTo(p2.x, p2.y);
+                    canvasCtx.strokeStyle = `rgb(${stress*255}, ${(1-stress)*255}, 0)`;
+                    canvasCtx.lineWidth = 5;
+                    canvasCtx.lineCap = 'round';
+                    canvasCtx.stroke();
+                }
+            } else {
+                wasPinching = false;
+            }
+            canvasCtx.restore();
+        }
+
+        const hands = new Hands({locateFile: (f) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${f}`});
+        hands.setOptions({maxNumHands: 2, modelComplexity: 1, minDetectionConfidence: 0.6, minTrackingConfidence: 0.6});
+        hands.onResults(render);
+
+        const camera = new Camera(videoElement, {
+            onFrame: async () => { await hands.send({image: videoElement}); },
+            width: 1280, height: 720
+        });
+
+        // AUTO-START ATTEMPT
+        camera.start().catch(err => {
+            console.log("Auto-start blocked, awaiting user click.");
+            statusText.innerText = "Browser blocked camera. Click anywhere to start.";
+        });
+
+        // FALLBACK: If the browser blocked auto-start, start on first click
+        window.addEventListener('click', () => {
+            camera.start();
+            statusText.innerText = "Starting...";
+        }, { once: true });
+
+    </script>
+</body>
+</html>

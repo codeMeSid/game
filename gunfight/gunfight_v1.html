@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Desperado: Eye-Dodge Duel</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.4.0/p5.js"></script>
+    <script src="https://unpkg.com/ml5@latest/dist/ml5.min.js"></script>
+    <style>
+        body { margin: 0; background: #000; display: flex; justify-content: center; align-items: center; font-family: 'Courier New', monospace; }
+        #ui-layer { position: absolute; color: white; text-align: center; pointer-events: none; width: 100%; }
+        #modal { position: absolute; background: rgba(0,0,0,0.9); border: 2px solid gold; padding: 20px; color: white; display: block; z-index: 100; }
+        .btn { background: gold; color: black; padding: 10px; cursor: pointer; pointer-events: auto; font-weight: bold; margin-top: 10px; display: inline-block; }
+    </style>
+</head>
+<body>
+
+    <div id="modal">
+        <h2>HOW TO DUEL</h2>
+        <p>1. <b>HOLSTER:</b> Hold your hand at the bottom of the camera frame.</p>
+        <p>2. <b>DODGE:</b> Close your <b>LEFT EYE</b> to lean left, <b>RIGHT EYE</b> to lean right.</p>
+        <p>3. <b>DRAW:</b> Flick your hand UP after the bell rings. Draw early and your gun <b>JAMS</b>.</p>
+        <div class="btn" onclick="document.getElementById('modal').style.display='none'">START DUEL</div>
+    </div>
+
+    <script>
+        let handpose, facemesh, video;
+        let hands = [], faces = [];
+        let gameState = "WAITING"; 
+        let signalTime = 0;
+        let playerHealth = 100, enemyHealth = 100;
+        let bloodAlpha = 0, cameraZoom = 1;
+        let gunJammed = false;
+        let playerOffset = 0; // For leaning/dodging
+
+        function setup() {
+            createCanvas(800, 600);
+            video = createCapture(VIDEO);
+            video.size(640, 480);
+            video.hide();
+
+            // Load AI Models
+            handpose = ml5.handpose(video);
+            handpose.on("predict", r => hands = r);
+            facemesh = ml5.facemesh(video);
+            facemesh.on("predict", r => faces = r);
+
+            resetGame();
+        }
+
+        function resetGame() {
+            gameState = "WAITING";
+            playerHealth = 100;
+            enemyHealth = 100;
+            bloodAlpha = 0;
+            cameraZoom = 1;
+            gunJammed = false;
+            signalTime = millis() + random(4000, 8000);
+        }
+
+        function draw() {
+            background(200, 160, 100);
+            
+            handleAI();
+            
+            // Camera Zoom Logic
+            if (gameState === "STEADY") {
+                cameraZoom = lerp(cameraZoom, 2.5, 0.002); // Slow zoom into eyes
+            }
+
+            push();
+            translate(width/2, height/2);
+            scale(cameraZoom);
+            translate(-width/2, -height/2);
+
+            drawScene();
+            drawEnemy();
+            
+            pop();
+
+            drawPlayerVFX();
+            drawUI();
+        }
+
+        function handleAI() {
+            if (faces.length > 0) {
+                let face = faces[0].annotations;
+                // Simple Blink Detection (Distance between eyelid landmarks)
+                let leftEyeDist = dist(face.leftEyeUpper0[3][0], face.leftEyeUpper0[3][1], face.leftEyeLower0[3][0], face.leftEyeLower0[3][1]);
+                let rightEyeDist = dist(face.rightEyeUpper0[3][0], face.rightEyeUpper0[3][1], face.rightEyeLower0[3][0], face.rightEyeLower0[3][1]);
+
+                if (leftEyeDist < 3) playerOffset = -100; // Lean Left
+                else if (rightEyeDist < 3) playerOffset = 100; // Lean Right
+                else playerOffset = 0;
+            }
+
+            if (hands.length > 0) {
+                let handY = hands[0].annotations.palmBase[0][1];
+                
+                // Initializing Holster
+                if (gameState === "WAITING" && handY > 350) gameState = "STEADY";
+
+                // Premature Draw (JAM)
+                if (gameState === "STEADY" && handY < 250 && millis() < signalTime) {
+                    gunJammed = true;
+                    gameState = "JAMMED";
+                }
+
+                // Valid Shoot
+                if (gameState === "DRAW" && handY < 250 && !gunJammed) {
+                    enemyHealth = 0;
+                    gameState = "WON";
+                }
+            }
+
+            // Enemy Shooting Logic
+            if (gameState === "DRAW" && millis() > signalTime + 600) {
+                // If player hasn't dodged the bullet path
+                if (playerOffset === 0) {
+                    playerHealth -= 20;
+                    bloodAlpha = 255;
+                }
+                if (playerHealth <= 0) gameState = "LOST";
+            }
+        }
+
+        function drawScene() {
+            // Sand and Horizon
+            fill(120, 100, 80);
+            rect(0, 400, width, 200);
+            // Sun
+            fill(255, 200, 0, 100);
+            ellipse(width/2, 380, 300, 300);
+        }
+
+        function drawEnemy() {
+            push();
+            translate(width/2, height/2 + 50);
+            // Cowboy body
+            fill(30);
+            rect(-40, -100, 80, 160);
+            // Eyes (Target of zoom)
+            fill(255);
+            ellipse(-15, -120, 15, 8);
+            ellipse(15, -120, 15, 8);
+            fill(0);
+            ellipse(-15, -120, 5, 5);
+            ellipse(15, -120, 5, 5);
+            pop();
+        }
+
+        function drawPlayerVFX() {
+            // Blood and Vision Loss
+            if (playerHealth < 100) {
+                let darkness = map(playerHealth, 100, 0, 0, 255);
+                fill(150, 0, 0, bloodAlpha);
+                rect(0, 0, width, height);
+                
+                // Vignette (Vision Loss)
+                noFill();
+                for(let i = 0; i < 20; i++) {
+                    stroke(0, 0, 0, darkness/2);
+                    strokeWeight(i * 20);
+                    ellipse(width/2 + playerOffset, height/2, width*1.5, height*1.5);
+                }
+                bloodAlpha = lerp(bloodAlpha, 0, 0.05);
+            }
+        }
+
+        function drawUI() {
+            textAlign(CENTER);
+            textSize(40);
+            fill(255);
+            if (gameState === "JAMMED") text("GUN JAMMED! DRAWN TOO EARLY", width/2, 100);
+            if (gameState === "DRAW") {
+                fill(0, 255, 0);
+                text("!!! DRAW !!!", width/2, 100);
+            }
+            if (gameState === "LOST") {
+                fill(0);
+                rect(0,0,width,height);
+                fill(255, 0, 0);
+                text("WASTED", width/2, height/2);
+                textSize(20);
+                text("Press SPACE to Respawn", width/2, height/2 + 60);
+            }
+        }
+
+        function keyPressed() { if (key === ' ') resetGame(); }
+    </script>
+</body>
+</html>

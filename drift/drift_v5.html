@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Pro Sensor Drifter</title>
+    <style>
+        body { margin: 0; padding: 0; overflow: hidden; background-color: #08080a; font-family: monospace; }
+        #ui { position: absolute; top: 20px; left: 20px; color: #fff; pointer-events: none; text-shadow: 0 0 5px #000; }
+        .panel { background: rgba(255, 255, 255, 0.05); padding: 15px; border-radius: 10px; border: 1px solid rgba(255,255,255,0.1); }
+        kbd { background: #444; padding: 2px 5px; border-radius: 3px; color: #ff283c; }
+        h3 { margin: 0 0 10px 0; color: #0ff; letter-spacing: 2px; }
+    </style>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.0/p5.min.js"></script>
+</head>
+<body>
+
+<div id="ui">
+    <div class="panel">
+        <h3>SYSTEM: ACTIVE</h3>
+        <p><kbd>W/A/S/D</kbd> Drive</p>
+        <p><kbd>SPACE</kbd> Nitro Boost</p>
+        <p><kbd>SHIFT</kbd> Drift / E-Brake</p>
+        <p><kbd>MOUSE</kbd> Draw Obstacles</p>
+        <p><kbd>R</kbd> Clear Track</p>
+    </div>
+</div>
+
+<script>
+let pos, velocity, angle = 0;
+let carLength = 40, carWidth = 20, carRadius = 14;
+let trackPath = [], leftWall = [], rightWall = [];
+let nitroParticles = [], sparks = [];
+
+// Sensor Config
+const SENSOR_COUNT = 32; 
+const SENSOR_RANGE = 300;
+
+function setup() {
+    createCanvas(windowWidth, windowHeight);
+    pos = createVector(width / 2, height / 2);
+    velocity = createVector(0, 0);
+    rectMode(CENTER);
+}
+
+function draw() {
+    background(8, 8, 12);
+
+    updatePhysics();
+    drawTrack();
+    
+    // 1. Subtle LIDAR Scan
+    drawLidar();
+
+    // 2. Effects
+    renderParticles(nitroParticles, false);
+    renderParticles(sparks, true);
+
+    // 3. Classic Car Design
+    drawCar();
+}
+
+function updatePhysics() {
+    let isAcc = keyIsDown(87), isRev = keyIsDown(83), isL = keyIsDown(65), isR = keyIsDown(68);
+    let isNitro = keyIsDown(32), isDrift = keyIsDown(16);
+
+    let enginePower = isNitro ? 1.3 : 0.4;
+    let turnSensitivity = isDrift ? 0.08 : 0.05;
+
+    // Steering logic
+    let speed = velocity.mag();
+    if (speed > 0.5) {
+        let dir = velocity.dot(p5.Vector.fromAngle(angle)) > 0 ? 1 : -1;
+        if (isL) angle -= turnSensitivity * dir * (speed * 0.2 + 1);
+        if (isR) angle += turnSensitivity * dir * (speed * 0.2 + 1);
+    }
+
+    let forward = p5.Vector.fromAngle(angle);
+    if (isAcc) velocity.add(p5.Vector.mult(forward, enginePower));
+    if (isRev) velocity.add(p5.Vector.mult(forward, -0.25));
+
+    // Lateral friction (Drift Math)
+    let lateralFriction = isDrift ? 0.96 : 0.75;
+    let fwdSpeed = velocity.dot(forward);
+    let fwdVel = p5.Vector.mult(forward, fwdSpeed);
+    let latVel = p5.Vector.sub(velocity, fwdVel);
+    
+    fwdVel.mult(0.97); 
+    latVel.mult(lateralFriction);
+    velocity = p5.Vector.add(fwdVel, latVel);
+    
+    // Update Position
+    let nextPos = p5.Vector.add(pos, velocity);
+
+    // Screen Wrap
+    if (nextPos.x > width + 20) nextPos.x = -20;
+    if (nextPos.x < -20) nextPos.x = width + 20;
+    if (nextPos.y > height + 20) nextPos.y = -20;
+    if (nextPos.y < -20) nextPos.y = height + 20;
+
+    // Collision Check
+    [leftWall, rightWall].forEach(wall => {
+        for(let i=0; i<wall.length-1; i++){
+            let res = distToSegment(nextPos, wall[i], wall[i+1]);
+            if(res.dist < carRadius) {
+                let n = createVector(-(wall[i+1].y - wall[i].y), wall[i+1].x - wall[i].x).normalize();
+                velocity.reflect(n).mult(0.5);
+                if(velocity.mag() > 2) spawnSparks(res.closest, n);
+                nextPos.add(p5.Vector.mult(n, carRadius - res.dist));
+            }
+        }
+    });
+
+    pos = nextPos;
+
+    // Nitro Spawn
+    if (isNitro && isAcc) {
+        for(let i=0; i<3; i++) {
+            let pVel = p5.Vector.mult(forward, -random(4, 8)).rotate(random(-0.2, 0.2));
+            nitroParticles.push({
+                pos: pos.copy().sub(p5.Vector.mult(forward, 15)),
+                vel: pVel, life: 255, col: color(0, 150, 255)
+            });
+        }
+    }
+}
+
+function drawLidar() {
+    let walls = [...leftWall, ...rightWall];
+    for (let i = 0; i < SENSOR_COUNT; i++) {
+        let rayAngle = angle + (i * (360 / SENSOR_COUNT));
+        let rayDir = p5.Vector.fromAngle(rayAngle);
+        let rayEnd = p5.Vector.add(pos, p5.Vector.mult(rayDir, SENSOR_RANGE));
+
+        let hitPoint = null;
+        let minDist = SENSOR_RANGE;
+
+        for (let j = 0; j < walls.length - 1; j++) {
+            let hit = intersect(pos.x, pos.y, rayEnd.x, rayEnd.y, walls[j].x, walls[j].y, walls[j+1].x, walls[j+1].y);
+            if (hit) {
+                let d = p5.Vector.dist(pos, hit);
+                if (d < minDist) { minDist = d; hitPoint = hit; }
+            }
+        }
+
+        // Draw the subtle ray
+        strokeWeight(1);
+        if (hitPoint) {
+            stroke(255, 50, 50, 80); // Faint red if hitting
+            line(pos.x, pos.y, hitPoint.x, hitPoint.y);
+            fill(255, 50, 50, 150);
+            noStroke();
+            circle(hitPoint.x, hitPoint.y, 3);
+        } else {
+            stroke(0, 255, 255, 20); // Very faint cyan in empty space
+            line(pos.x, pos.y, rayEnd.x, rayEnd.y);
+        }
+    }
+}
+
+function drawCar() {
+    push();
+    translate(pos.x, pos.y);
+    rotate(angle);
+
+    // Glow effect
+    drawingContext.shadowBlur = 15;
+    drawingContext.shadowColor = color(255, 40, 60);
+
+    // Chassis
+    fill(25);
+    stroke(255, 40, 60);
+    strokeWeight(2);
+    rect(0, 0, carLength, carWidth, 4);
+
+    // Cockpit
+    noStroke();
+    fill(10, 10, 15);
+    rect(4, 0, 12, carWidth - 6, 2);
+
+    // Headlights
+    fill(255, 255, 200);
+    drawingContext.shadowBlur = 10;
+    drawingContext.shadowColor = 'yellow';
+    circle(carLength / 2 - 2, -carWidth / 2 + 4, 3);
+    circle(carLength / 2 - 2, carWidth / 2 - 4, 3);
+    pop();
+}
+
+// --- UTILITIES ---
+function mouseDragged() {
+    let m = createVector(mouseX, mouseY);
+    if (trackPath.length === 0 || p5.Vector.dist(trackPath[trackPath.length-1], m) > 30) {
+        trackPath.push(m);
+        generateWalls();
+    }
+}
+
+function keyPressed() { if (key === 'r') { trackPath=[]; leftWall=[]; rightWall=[]; } }
+
+function generateWalls() {
+    leftWall = []; rightWall = [];
+    for (let i = 0; i < trackPath.length - 1; i++) {
+        let d = p5.Vector.sub(trackPath[i+1], trackPath[i]).normalize();
+        leftWall.push(p5.Vector.add(trackPath[i], createVector(-d.y, d.x).mult(60)));
+        rightWall.push(p5.Vector.add(trackPath[i], createVector(d.y, -d.x).mult(60)));
+    }
+}
+
+function drawTrack() {
+    noFill(); stroke(30); strokeWeight(120);
+    beginShape(); for(let p of trackPath) vertex(p.x, p.y); endShape();
+    strokeWeight(2); stroke(0, 255, 255, 100);
+    for(let i=0; i<leftWall.length-1; i++) line(leftWall[i].x, leftWall[i].y, leftWall[i+1].x, leftWall[i+1].y);
+    stroke(255, 0, 255, 100);
+    for(let i=0; i<rightWall.length-1; i++) line(rightWall[i].x, rightWall[i].y, rightWall[i+1].x, rightWall[i+1].y);
+}
+
+function spawnSparks(p, n) { 
+    for(let i=0; i<5; i++) sparks.push({pos: p.copy(), vel: n.copy().rotate(random(-0.5, 0.5)).mult(random(2, 5)), life: 255, col: color(255, 200, 0)}); 
+}
+
+function renderParticles(arr, isSpark) {
+    for (let i = arr.length - 1; i >= 0; i--) {
+        let p = arr[i]; p.pos.add(p.vel); p.life -= 12;
+        if(isSpark) p.vel.mult(0.95);
+        noStroke(); fill(red(p.col), green(p.col), blue(p.col), p.life);
+        circle(p.pos.x, p.pos.y, isSpark ? random(2, 4) : random(5, 10));
+        if (p.life <= 0) arr.splice(i, 1);
+    }
+}
+
+function intersect(x1, y1, x2, y2, x3, y3, x4, y4) {
+    let den = (x1 - x2) * (y3 - y4) - (y1 - y2) * (x3 - x4);
+    if (den == 0) return null;
+    let t = ((x1 - x3) * (y3 - y4) - (y1 - y3) * (x3 - x4)) / den;
+    let u = -((x1 - x2) * (y1 - y3) - (y1 - y2) * (x1 - x3)) / den;
+    return (t >= 0 && t <= 1 && u >= 0 && u <= 1) ? createVector(x1 + t * (x2 - x1), y1 + t * (y2 - y1)) : null;
+}
+
+function distToSegment(p, v, w) {
+    let l2 = p5.Vector.dist(v, w)**2;
+    if (l2 === 0) return {dist: p.dist(v), closest: v};
+    let t = constrain(((p.x - v.x) * (w.x - v.x) + (p.y - v.y) * (w.y - v.y)) / l2, 0, 1);
+    let proj = createVector(v.x + t * (w.x - v.x), v.y + t * (w.y - v.y));
+    return {dist: p.dist(proj), closest: proj};
+}
+</script>
+</body>
+</html>

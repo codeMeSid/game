@@ -1,0 +1,430 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Conductor Cellular Automata</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background-color: #050505;
+            font-family: sans-serif;
+            user-select: none; 
+        }
+        #info {
+            position: absolute;
+            top: 15px;
+            left: 15px;
+            color: rgba(255, 255, 255, 0.8);
+            pointer-events: none;
+            text-shadow: 0 2px 4px rgba(0,0,0,0.8);
+            z-index: 10;
+        }
+        #controls {
+            position: absolute;
+            bottom: 30px;
+            left: 50%;
+            transform: translateX(-50%);
+            display: flex;
+            gap: 15px;
+            background: rgba(20, 20, 20, 0.8);
+            padding: 15px;
+            border-radius: 8px;
+            border: 1px solid #333;
+            z-index: 10;
+        }
+        button {
+            background: #222;
+            color: white;
+            border: 1px solid #555;
+            padding: 10px 20px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 16px;
+            transition: all 0.2s;
+        }
+        button:hover {
+            background: #444;
+            border-color: #888;
+        }
+        button.active {
+            background: #00ffcc;
+            color: #000;
+            border-color: #00ffcc;
+        }
+        button:disabled {
+            background: #111;
+            color: #555;
+            cursor: not-allowed;
+            border-color: #222;
+        }
+        /* Small picture-in-picture video feed */
+        #videoElement {
+            position: absolute;
+            bottom: 15px;
+            right: 15px;
+            width: 240px;
+            height: 180px;
+            border-radius: 8px;
+            border: 2px solid #333;
+            transform: scaleX(-1); /* Mirror video to match hand */
+            object-fit: cover;
+            display: none;
+            z-index: 10;
+        }
+    </style>
+</head>
+<body>
+    <div id="info">
+        <h2>Conductor Automata</h2>
+        <p><b>Mouse:</b> Click & drag to rotate.<br>
+           <b>Conductor Mode:</b><br>
+           - Index Finger: Aim<br>
+           - Pinch (Thumb + Index): Birth Cells<br>
+           - Closed Fist: Kill Cells</p>
+    </div>
+
+    <div id="controls">
+        <button id="playBtn" class="active">Pause Sim</button>
+        <button id="clearBtn">Clear</button>
+        <button id="webcamBtn" disabled>Loading AI...</button>
+    </div>
+
+    <video id="videoElement" autoplay playsinline></video>
+
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+                "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+            }
+        }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+        // Import MediaPipe
+        import { GestureRecognizer, FilesetResolver } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.3";
+
+        // --- Configuration ---
+        const GRID_SIZE = 60;
+        const TOTAL_CELLS = GRID_SIZE * GRID_SIZE;
+        const TICK_RATE = 400; 
+        const LERP_SPEED = 0.1;
+
+        let isRunning = true;
+        let conductorActive = false;
+
+        // --- Scene Setup ---
+        const scene = new THREE.Scene();
+        scene.fog = new THREE.FogExp2(0x050505, 0.015);
+
+        const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 1000);
+        camera.position.set(GRID_SIZE * 0.8, GRID_SIZE * 0.6, GRID_SIZE * 0.8);
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        document.body.appendChild(renderer.domElement);
+
+        const controls = new OrbitControls(camera, renderer.domElement);
+        controls.target.set(0, 0, 0);
+        controls.enableDamping = true;
+
+        // --- Lighting ---
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.4);
+        scene.add(ambientLight);
+        const dirLight = new THREE.DirectionalLight(0xffffff, 2);
+        dirLight.position.set(50, 100, 20);
+        scene.add(dirLight);
+
+        // --- Instanced Mesh Setup ---
+        const geometry = new THREE.BoxGeometry(0.9, 1, 0.9);
+        const material = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.2, metalness: 0.1 });
+        const instancedMesh = new THREE.InstancedMesh(geometry, material, TOTAL_CELLS);
+        scene.add(instancedMesh);
+
+        // Visual Conductor Cursor (A glowing sphere to show where you are pointing)
+        const cursorGeo = new THREE.SphereGeometry(1.5, 16, 16);
+        const cursorMat = new THREE.MeshBasicMaterial({ color: 0xff0000, transparent: true, opacity: 0.8 });
+        const cursorMesh = new THREE.Mesh(cursorGeo, cursorMat);
+        cursorMesh.visible = false;
+        scene.add(cursorMesh);
+
+        // --- Data State ---
+        let grid = new Int8Array(TOTAL_CELLS);
+        let ages = new Int32Array(TOTAL_CELLS);
+        
+        const currentHeights = new Float32Array(TOTAL_CELLS).fill(0.1);
+        const targetHeights = new Float32Array(TOTAL_CELLS).fill(0.1);
+        const currentColors = Array.from({ length: TOTAL_CELLS }, () => new THREE.Color(0x111111));
+        const targetColors = Array.from({ length: TOTAL_CELLS }, () => new THREE.Color(0x111111));
+
+        const dummy = new THREE.Object3D();
+        const baseColor = new THREE.Color(0x111111);
+        const colorPalette = [
+            new THREE.Color(0x00ffcc), new THREE.Color(0x0066ff), new THREE.Color(0x9900ff), 
+            new THREE.Color(0xff0066), new THREE.Color(0xffcc00), new THREE.Color(0xffffff)
+        ];
+
+        const offset = GRID_SIZE / 2;
+
+        function clearBoard() {
+            for (let i = 0; i < TOTAL_CELLS; i++) {
+                grid[i] = 0; ages[i] = 0; targetHeights[i] = 0.1; targetColors[i] = baseColor;
+            }
+        }
+        
+        function randomSeed() {
+            for (let i = 0; i < TOTAL_CELLS; i++) {
+                grid[i] = Math.random() > 0.85 ? 1 : 0;
+                ages[i] = grid[i] ? 1 : 0;
+            }
+        }
+        randomSeed();
+
+        function getIndex(x, z) {
+            const wrapX = (x + GRID_SIZE) % GRID_SIZE;
+            const wrapZ = (z + GRID_SIZE) % GRID_SIZE;
+            return wrapX + wrapZ * GRID_SIZE;
+        }
+
+        function countNeighbors(x, z) {
+            let sum = 0;
+            for (let i = -1; i <= 1; i++) {
+                for (let j = -1; j <= 1; j++) {
+                    if (i === 0 && j === 0) continue;
+                    sum += grid[getIndex(x + i, z + j)];
+                }
+            }
+            return sum;
+        }
+
+        function getColorForAge(age) {
+            if (age === 0) return baseColor;
+            if (age >= 20) return colorPalette[5];
+            if (age >= 15) return colorPalette[4];
+            if (age >= 10) return colorPalette[3];
+            if (age >= 6) return colorPalette[2];
+            if (age >= 3) return colorPalette[1];
+            return colorPalette[0];
+        }
+
+        function updateSimulation() {
+            const nextGrid = new Int8Array(TOTAL_CELLS);
+            for (let x = 0; x < GRID_SIZE; x++) {
+                for (let z = 0; z < GRID_SIZE; z++) {
+                    const idx = getIndex(x, z);
+                    const isAlive = grid[idx] === 1;
+                    const neighbors = countNeighbors(x, z);
+
+                    if (isAlive && (neighbors === 2 || neighbors === 3)) {
+                        nextGrid[idx] = 1; ages[idx]++;
+                    } else if (!isAlive && neighbors === 3) {
+                        nextGrid[idx] = 1; ages[idx] = 1;
+                    } else {
+                        nextGrid[idx] = 0; ages[idx] = 0;
+                    }
+
+                    if (nextGrid[idx] === 1) {
+                        targetHeights[idx] = Math.min(1 + (ages[idx] * 0.4), 12);
+                        targetColors[idx] = getColorForAge(ages[idx]);
+                    } else {
+                        targetHeights[idx] = 0.1; targetColors[idx] = baseColor;
+                    }
+                }
+            }
+            grid.set(nextGrid);
+        }
+
+        // --- Interactivity Utilities ---
+        const raycaster = new THREE.Raycaster();
+        const mouseNDC = new THREE.Vector2();
+
+        function interactWithGrid(x, y, action) {
+            raycaster.setFromCamera({ x, y }, camera);
+            const intersects = raycaster.intersectObject(instancedMesh);
+
+            if (intersects.length > 0) {
+                const instanceId = intersects[0].instanceId;
+                const point = intersects[0].point;
+
+                // Move visual cursor
+                cursorMesh.position.set(point.x, Math.max(point.y, 2), point.z);
+
+                if (action === 'birth' && grid[instanceId] === 0) {
+                    grid[instanceId] = 1; ages[instanceId] = 1;
+                    targetHeights[instanceId] = 2.0; 
+                    targetColors[instanceId] = getColorForAge(1);
+                    cursorMesh.material.color.setHex(0x00ffcc); // Flash cyan on birth
+                } else if (action === 'kill') {
+                    // Kill a small radius for a dramatic "fist" effect
+                    const gridX = Math.floor(point.x + offset);
+                    const gridZ = Math.floor(point.z + offset);
+                    
+                    for(let i = -2; i <= 2; i++) {
+                        for(let j = -2; j <= 2; j++) {
+                            const killIdx = getIndex(gridX + i, gridZ + j);
+                            grid[killIdx] = 0; ages[killIdx] = 0;
+                            targetHeights[killIdx] = 0.1; targetColors[killIdx] = baseColor;
+                        }
+                    }
+                    cursorMesh.material.color.setHex(0xff0000); // Red on kill
+                }
+            }
+        }
+
+        // Mouse Fallback
+        window.addEventListener('click', (event) => {
+            if (event.target.tagName === 'BUTTON' || conductorActive) return;
+            const x = (event.clientX / window.innerWidth) * 2 - 1;
+            const y = -(event.clientY / window.innerHeight) * 2 + 1;
+            interactWithGrid(x, y, 'birth');
+        });
+
+        // --- MediaPipe Hand Tracking ---
+        let gestureRecognizer;
+        const video = document.getElementById("videoElement");
+        const webcamBtn = document.getElementById("webcamBtn");
+
+        async function createGestureRecognizer() {
+            const vision = await FilesetResolver.forVisionTasks(
+                "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.3/wasm"
+            );
+            gestureRecognizer = await GestureRecognizer.createFromOptions(vision, {
+                baseOptions: {
+                    modelAssetPath: "https://storage.googleapis.com/mediapipe-models/gesture_recognizer/gesture_recognizer/float16/1/gesture_recognizer.task",
+                    delegate: "GPU"
+                },
+                runningMode: "VIDEO",
+                numHands: 1
+            });
+            webcamBtn.innerText = "Start Conductor Mode";
+            webcamBtn.disabled = false;
+        }
+        createGestureRecognizer();
+
+        // --- UI Listeners ---
+        document.getElementById('playBtn').addEventListener('click', (e) => {
+            isRunning = !isRunning;
+            e.target.textContent = isRunning ? "Pause Sim" : "Play Sim";
+            e.target.classList.toggle("active", isRunning);
+        });
+
+        document.getElementById('clearBtn').addEventListener('click', () => {
+            clearBoard();
+        });
+
+        webcamBtn.addEventListener('click', async () => {
+            if (!conductorActive) {
+                // Start webcam
+                const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+                video.srcObject = stream;
+                video.style.display = "block";
+                video.addEventListener("loadeddata", () => {
+                    conductorActive = true;
+                    cursorMesh.visible = true;
+                    webcamBtn.innerText = "Stop Conductor Mode";
+                    webcamBtn.classList.add("active");
+                });
+            } else {
+                // Stop webcam
+                conductorActive = false;
+                cursorMesh.visible = false;
+                video.srcObject.getTracks().forEach(track => track.stop());
+                video.style.display = "none";
+                webcamBtn.innerText = "Start Conductor Mode";
+                webcamBtn.classList.remove("active");
+            }
+        });
+
+        // --- Render Loop ---
+        let lastTick = 0;
+        let lastVideoTime = -1;
+
+        function animate(time) {
+            requestAnimationFrame(animate);
+            controls.update();
+
+            // Run Simulation
+            if (isRunning && time - lastTick > TICK_RATE) {
+                updateSimulation();
+                lastTick = time;
+            }
+
+            // Run AI Hand Tracking
+            if (conductorActive && video.readyState >= 2 && video.currentTime !== lastVideoTime) {
+                lastVideoTime = video.currentTime;
+                const results = gestureRecognizer.recognizeForVideo(video, performance.now());
+                
+                if (results.landmarks.length > 0) {
+                    const landmarks = results.landmarks[0];
+                    const gestureName = results.gestures[0][0].categoryName;
+                    
+                    // Index Finger Tip (Landmark 8)
+                    const indexTip = landmarks[8];
+                    const thumbTip = landmarks[4];
+
+                    // Map hand coords (0-1) to Three.js NDC (-1 to +1). 
+                    // Note: We invert X because the video feed is mirrored like a selfie.
+                    const mappedX = -((indexTip.x * 2) - 1); 
+                    const mappedY = -((indexTip.y * 2) - 1);
+
+                    // Calculate 2D distance between thumb and index for a reliable "Pinch"
+                    const dx = indexTip.x - thumbTip.x;
+                    const dy = indexTip.y - thumbTip.y;
+                    const pinchDistance = Math.sqrt(dx * dx + dy * dy);
+
+                    // Determine Action
+                    let action = 'hover';
+                    if (pinchDistance < 0.05) {
+                        action = 'birth';
+                    } else if (gestureName === "Closed_Fist") {
+                        action = 'kill';
+                    } else {
+                        cursorMesh.material.color.setHex(0xaaaaaa); // Gray when hovering
+                    }
+
+                    interactWithGrid(mappedX, mappedY, action);
+                }
+            }
+
+            // Visual Lerping
+            for (let x = 0; x < GRID_SIZE; x++) {
+                for (let z = 0; z < GRID_SIZE; z++) {
+                    const idx = getIndex(x, z);
+                    
+                    currentHeights[idx] += (targetHeights[idx] - currentHeights[idx]) * LERP_SPEED;
+                    currentColors[idx].lerp(targetColors[idx], LERP_SPEED);
+
+                    const posX = x - offset;
+                    const posZ = z - offset;
+                    const posY = currentHeights[idx] / 2; 
+
+                    dummy.position.set(posX, posY, posZ);
+                    dummy.scale.set(1, currentHeights[idx], 1);
+                    dummy.updateMatrix();
+
+                    instancedMesh.setMatrixAt(idx, dummy.matrix);
+                    instancedMesh.setColorAt(idx, currentColors[idx]);
+                }
+            }
+
+            instancedMesh.instanceMatrix.needsUpdate = true;
+            if (instancedMesh.instanceColor) instancedMesh.instanceColor.needsUpdate = true;
+
+            renderer.render(scene, camera);
+        }
+
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+        requestAnimationFrame(animate);
+    </script>
+</body>
+</html>

@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Gesture-Controlled Space Traveler</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.0/p5.min.js"></script>
+    <script src="https://unpkg.com/ml5@0.12.2/dist/ml5.min.js"></script>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            background-color: #000;
+            font-family: 'Courier New', Courier, monospace;
+        }
+        /* Hide the raw video feed, we only need the canvas */
+        #video-container {
+            display: none; 
+        }
+        #ui {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            color: #00FFCC;
+            z-index: 10;
+            pointer-events: none;
+            background: rgba(0, 0, 0, 0.5);
+            padding: 15px;
+            border-radius: 8px;
+            border: 1px solid #00FFCC;
+        }
+        h1 { margin: 0 0 10px 0; font-size: 1.2rem; }
+        p { margin: 5px 0; font-size: 0.9rem; }
+    </style>
+</head>
+<body>
+
+    <div id="ui">
+        <h1>Warp Drive Control</h1>
+        <p id="status">Status: Loading ML Model...</p>
+        <p>Instructions:</p>
+        <p>1. Allow Camera access.</p>
+        <p>2. Hold up TWO closed fists to the camera.</p>
+        <p>3. Move closer to speed up, further to slow down.</p>
+        <p id="speed-display">Warp Speed: 1.0x</p>
+    </div>
+
+    <script>
+        let video;
+        let handpose;
+        let hands = [];
+        let stars = [];
+        let planets = [];
+        
+        let currentSpeed = 5; 
+        let targetSpeed = 5;
+        const BASE_SPEED = 5;
+        const MAX_SPEED = 150;
+
+        function setup() {
+            createCanvas(windowWidth, windowHeight, WEBGL);
+            
+            // 1. Setup Video Capture
+            video = createCapture(VIDEO);
+            video.size(640, 480);
+            video.hide();
+            
+            // 2. Initialize Handpose Model
+            handpose = ml5.handpose(video, modelReady);
+            
+            // Listen to new 'predict' events
+            handpose.on('predict', results => {
+                hands = results;
+            });
+            
+            // 3. Generate the Galaxy Environment
+            for (let i = 0; i < 600; i++) {
+                stars.push(generateCelestialBody('star'));
+            }
+            for (let i = 0; i < 15; i++) {
+                planets.push(generateCelestialBody('planet'));
+            }
+            
+            noStroke();
+        }
+
+        function modelReady() {
+            document.getElementById('status').innerText = "Status: Sensors Online. Awaiting gestures.";
+            document.getElementById('status').style.color = "#00FF00";
+        }
+
+        function generateCelestialBody(type) {
+            return {
+                x: random(-width * 2, width * 2),
+                y: random(-height * 2, height * 2),
+                z: random(-4000, 0), // Place objects far into the Z axis
+                size: type === 'star' ? random(1, 4) : random(40, 150),
+                color: type === 'star' ? 
+                       color(255, 255, 255, random(150, 255)) : 
+                       color(random(50, 255), random(50, 200), random(100, 255)),
+                type: type,
+                rotationX: random(0, TWO_PI),
+                rotationY: random(0, TWO_PI),
+                rotSpeedX: random(-0.02, 0.02),
+                rotSpeedY: random(-0.02, 0.02)
+            };
+        }
+
+        // Helper function to determine if a hand is closed (fist)
+        function isClosedFist(hand) {
+            // We compare the Y coordinate of the fingertips to the base joints (MCP)
+            // If the fingertips are below the joints (higher Y value in pixel coords), they are curled
+            const tips = [8, 12, 16, 20]; // Index, Middle, Ring, Pinky tips
+            const joints = [5, 9, 13, 17]; // Corresponding base joints
+            let curledFingers = 0;
+            
+            for(let i = 0; i < 4; i++) {
+                if(hand.landmarks[tips[i]][1] > hand.landmarks[joints[i]][1]) {
+                    curledFingers++;
+                }
+            }
+            // If at least 3 fingers are curled in, we register it as a fist
+            return curledFingers >= 3; 
+        }
+
+        function draw() {
+            background(5, 8, 20); // Deep space background
+            
+            targetSpeed = BASE_SPEED; // Reset target speed to idle
+            
+            // 4. Process Hand Gestures
+            if (hands.length >= 2) {
+                let hand1 = hands[0];
+                let hand2 = hands[1];
+                
+                if (isClosedFist(hand1) && isClosedFist(hand2)) {
+                    document.getElementById('status').innerText = "Status: WARP DRIVE ENGAGED";
+                    document.getElementById('status').style.color = "#FF3366";
+
+                    // Calculate hand size (bounding box width) as a proxy for distance to screen
+                    // Larger hand = closer to camera
+                    let width1 = Math.max(...hand1.landmarks.map(p => p[0])) - Math.min(...hand1.landmarks.map(p => p[0]));
+                    let width2 = Math.max(...hand2.landmarks.map(p => p[0])) - Math.min(...hand2.landmarks.map(p => p[0]));
+                    let averageHandSize = (width1 + width2) / 2;
+                    
+                    // Map the hand size (roughly 50px to 250px) to our speed limits
+                    targetSpeed = map(averageHandSize, 50, 250, BASE_SPEED, MAX_SPEED);
+                    targetSpeed = constrain(targetSpeed, BASE_SPEED, MAX_SPEED);
+                } else {
+                    document.getElementById('status').innerText = "Status: Cruising... Show two fists to accelerate.";
+                    document.getElementById('status').style.color = "#00FF00";
+                }
+            } else if (hands.length > 0) {
+                 document.getElementById('status').innerText = "Status: Second hand required for warp.";
+                 document.getElementById('status').style.color = "#FFFF00";
+            }
+
+            // Smooth the acceleration and deceleration
+            currentSpeed = lerp(currentSpeed, targetSpeed, 0.05);
+            
+            // Update UI
+            document.getElementById('speed-display').innerText = `Warp Speed: ${(currentSpeed / BASE_SPEED).toFixed(1)}x`;
+
+            // 5. Render and Animate the Galaxy
+            ambientLight(150);
+            directionalLight(255, 255, 255, 0.5, 0.5, -1);
+
+            let allBodies = stars.concat(planets);
+            
+            for (let body of allBodies) {
+                push();
+                translate(body.x, body.y, body.z);
+                
+                fill(body.color);
+                
+                if (body.type === 'star') {
+                    // Use simple points/tiny spheres for stars to save performance
+                    sphere(body.size, 4, 4); 
+                } else {
+                    // Rotate planets
+                    rotateX(body.rotationX);
+                    rotateY(body.rotationY);
+                    body.rotationX += body.rotSpeedX;
+                    body.rotationY += body.rotSpeedY;
+                    sphere(body.size, 16, 16);
+                }
+                pop();
+                
+                // Move object towards the camera (Z = 0) based on current speed
+                body.z += currentSpeed;
+                
+                // If the object passes the camera, recycle it to the back of the galaxy
+                if (body.z > 200) {
+                    let newBody = generateCelestialBody(body.type);
+                    body.x = newBody.x;
+                    body.y = newBody.y;
+                    body.z = newBody.z - 500; // Push further back to prevent pop-in
+                    body.size = newBody.size;
+                    body.color = newBody.color;
+                }
+            }
+        }
+
+        // Handle window resizing to keep the canvas full screen
+        function windowResized() {
+            resizeCanvas(windowWidth, windowHeight);
+        }
+    </script>
+</body>
+</html>

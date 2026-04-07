@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Glowdrive Fist Pilot V3</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.0/p5.min.js"></script>
+    <style>
+        body { margin: 0; padding: 0; overflow: hidden; background-color: #000; font-family: 'Courier New', Courier, monospace; }
+        #ui { position: absolute; top: 20px; left: 20px; color: #00FFFF; z-index: 10; pointer-events: none; background: rgba(0, 10, 20, 0.7); padding: 15px; border-radius: 8px; border: 1px solid #00FFFF; box-shadow: 0 0 15px rgba(0, 255, 255, 0.4); text-transform: uppercase;}
+        h1 { margin: 0 0 10px 0; font-size: 1.2rem; }
+        p { margin: 5px 0; font-size: 0.9rem; letter-spacing: 1px; }
+        .control { color: #FFFF00; font-weight: bold; }
+        #nav-indicator { font-size: 1.1rem; color: #00FF00; margin-top: 10px; font-family: monospace;}
+        /* Added a class to make the Warp text shake/pulse slightly */
+        .warp-active { color: #FF0055 !important; font-weight: bold; text-shadow: 0 0 10px #FF0055; animation: shake 0.5s infinite; }
+        @keyframes shake { 0% { transform: translate(1px, 1px) rotate(0deg); } 50% { transform: translate(-1px, -2px) rotate(-1deg); } 100% { transform: translate(1px, -1px) rotate(1deg); } }
+    </style>
+</head>
+<body>
+
+    <div id="ui">
+        <h1>Flight Computer V3.0</h1>
+        <p id="status">Status: Initializing MediaPipe...</p>
+        <p>Instructions: (Requires 2 Fists)</p>
+        <p>1. <span class="control">Size:</span> Clsr = WARP | Fthr = Cruise</p>
+        <p>2. <span class="control">Tilt:</span> Turn fists Left/Right to steer</p>
+        <p>3. <span class="control">Reset:</span> Show Open Palms to stop.</p>
+        <p id="speed-display">VELOCITY: 0.0c</p>
+        <p id="nav-indicator">NAV: [ C E N T E R ]</p>
+    </div>
+
+    <script type="module">
+        import { GestureRecognizer, FilesetResolver } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.3";
+
+        let gestureRecognizer;
+        let video;
+        let stars = [];
+        let modelLoaded = false;
+        let lastVideoTime = -1;
+        let gestureResults = undefined;
+
+        // Physics Constants
+        const LERP_SPEED = 0.08;   // Made speed changes slightly faster
+        const LERP_STEER = 0.03;   
+        const LERP_ROLL = 0.05;    
+
+        // Control Thresholds
+        const IDLE_SPEED = 4;
+        const MAX_SPEED = 180;         // Increased max speed for better effect
+        const MAX_STEER_RATE = 0.015;  
+        const MAX_ROLL_ANGLE = 0.25;   
+        const TILT_DEADZONE = 0.15;   
+        const WARP_SIZE_THRESHOLD = 0.20; // 20% of screen width triggers WARP
+
+        let currentSpeed = 0;
+        let currentSteerX = 0; 
+        let currentRollZ = 0;  
+
+        let targetSpeed = 0;
+        let targetSteerRateX = 0;
+        let targetRollZ = 0;
+
+        window.setup = function() {
+            createCanvas(windowWidth, windowHeight, WEBGL);
+            
+            video = createCapture(VIDEO);
+            video.size(640, 480);
+            video.hide();
+            
+            for (let i = 0; i < 1500; i++) {
+                stars.push(new GlowParticle());
+            }
+
+            initMediaPipe();
+        };
+
+        async function initMediaPipe() {
+            const vision = await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.3/wasm");
+            gestureRecognizer = await GestureRecognizer.createFromOptions(vision, {
+                baseOptions: {
+                    modelAssetPath: "https://storage.googleapis.com/mediapipe-models/gesture_recognizer/gesture_recognizer/float16/1/gesture_recognizer.task",
+                    delegate: "GPU"
+                },
+                runningMode: "VIDEO",
+                numHands: 2
+            });
+            modelLoaded = true;
+            document.getElementById('status').innerText = "Status: PILOT INPUT REQUIRED";
+        }
+
+        window.draw = function() {
+            background(2, 4, 12); 
+
+            if (modelLoaded && video.loadedmetadata && video.elt.currentTime !== lastVideoTime) {
+                lastVideoTime = video.elt.currentTime;
+                gestureResults = gestureRecognizer.recognizeForVideo(video.elt, performance.now());
+            }
+
+            let statusEl = document.getElementById('status');
+
+            if (gestureResults && gestureResults.landmarks.length >= 2) {
+                let hand1 = gestureResults.landmarks[0];
+                let hand2 = gestureResults.landmarks[1];
+                let g1 = gestureResults.gestures[0][0].categoryName;
+                let g2 = gestureResults.gestures[1][0].categoryName;
+
+                if (g1 === "Closed_Fist" && g2 === "Closed_Fist") {
+                    
+                    // --- SPEED CALCULATION (Fix applied here) ---
+                    let w1 = Math.max(...hand1.map(p => p.x)) - Math.min(...hand1.map(p => p.x));
+                    let w2 = Math.max(...hand2.map(p => p.x)) - Math.min(...hand2.map(p => p.x));
+                    let avgHandSize = (w1 + w2) / 2; 
+
+                    // If hands are larger than 20% of the screen width, trigger WARP
+                    if (avgHandSize >= WARP_SIZE_THRESHOLD) {
+                        statusEl.innerText = "Status: WARP DRIVE ENGAGED!";
+                        statusEl.className = "warp-active";
+                        // Ramp from 60 to MAX_SPEED rapidly
+                        targetSpeed = map(avgHandSize, WARP_SIZE_THRESHOLD, 0.32, 60, MAX_SPEED);
+                    } else {
+                        statusEl.innerText = "Status: CRUISING (Push forward to warp)";
+                        statusEl.className = "";
+                        statusEl.style.color = "#00FFFF";
+                        // Cruising speed sits between IDLE and 40
+                        targetSpeed = map(avgHandSize, 0.05, WARP_SIZE_THRESHOLD, IDLE_SPEED, 40);
+                    }
+                    
+                    targetSpeed = constrain(targetSpeed, IDLE_SPEED, MAX_SPEED);
+
+                    // --- STEERING CALCULATION ---
+                    function getHandTilt(handLandmarks) {
+                        let wrist = handLandmarks[0];
+                        let knuckle = handLandmarks[9];
+                        return atan2(-(knuckle.y - wrist.y), knuckle.x - wrist.x);
+                    }
+
+                    let tilt1 = getHandTilt(hand1);
+                    let tilt2 = getHandTilt(hand2);
+                    let avgTiltRaw = (tilt1 + tilt2) / 2;
+
+                    let angleDiffFromVertical = avgTiltRaw - PI/2;
+
+                    let navDisplay = document.getElementById('nav-indicator');
+                    if (angleDiffFromVertical > TILT_DEADZONE) {
+                        navDisplay.innerText = "NAV: [ <- LEFT ]"; navDisplay.style.color = "#FF00FF";
+                    } else if (angleDiffFromVertical < -TILT_DEADZONE) {
+                        navDisplay.innerText = "NAV: [ RIGHT -> ]"; navDisplay.style.color = "#00FFFF";
+                    } else {
+                        navDisplay.innerText = "NAV: [ CENTER ]"; navDisplay.style.color = "#00FF00";
+                    }
+
+                    targetSteerRateX = map(angleDiffFromVertical, -PI/3, PI/3, MAX_STEER_RATE, -MAX_STEER_RATE);
+                    targetRollZ = map(angleDiffFromVertical, -PI/3, PI/3, MAX_ROLL_ANGLE, -MAX_ROLL_ANGLE);
+                    
+                    targetSteerRateX = constrain(targetSteerRateX, -MAX_STEER_RATE, MAX_STEER_RATE);
+                    targetRollZ = constrain(targetRollZ, -MAX_ROLL_ANGLE, MAX_ROLL_ANGLE);
+
+                    if (abs(angleDiffFromVertical) < TILT_DEADZONE) {
+                        targetSteerRateX = 0;
+                        targetRollZ = 0;
+                    }
+
+                } else {
+                    resetTargets("Status: FIST IDLE (Holding Cruise)", "#FFFF00", statusEl);
+                    targetSpeed = IDLE_SPEED; 
+                }
+            } else {
+                resetTargets(modelLoaded ? "Status: GESTURE PILOT STANDBY" : "Status: Load ML...", "#888888", statusEl);
+                targetSpeed = 0; 
+            }
+
+            function resetTargets(msg, col, el) {
+                targetSteerRateX = 0;
+                targetRollZ = 0;
+                el.innerText = msg;
+                el.style.color = col;
+                el.className = ""; // clear warp shaking
+                document.getElementById('nav-indicator').innerText = "NAV: [ HOLD ]";
+                document.getElementById('nav-indicator').style.color = "#888888";
+            }
+
+            // PHYSICS
+            currentSpeed = lerp(currentSpeed, targetSpeed, LERP_SPEED);
+            currentSteerX += lerp(0, targetSteerRateX, LERP_STEER); 
+            currentRollZ = lerp(currentRollZ, targetRollZ, LERP_ROLL); 
+
+            document.getElementById('speed-display').innerText = `VELOCITY: ${(currentSpeed).toFixed(1)}c`;
+
+            // RENDER
+            push(); 
+            rotateY(currentSteerX); 
+            rotateZ(currentRollZ); 
+            
+            for (let particle of stars) {
+                particle.update(currentSpeed);
+                particle.show(currentSpeed);
+            }
+            pop(); 
+        };
+
+        window.windowResized = function() {
+            resizeCanvas(windowWidth, windowHeight);
+        };
+
+        class GlowParticle {
+            constructor() {
+                this.x = random(-width * 1.5, width * 1.5);
+                this.y = random(-height * 1.5, height * 1.5);
+                this.z = random(-width * 3, width); 
+                this.pz = this.z; 
+
+                let baseCol = color(random(100, 255), random(200, 255), random(230, 255), random(150, 255));
+                if (random(1) > 0.9) baseCol = color(random(230, 255), random(200, 255), random(100, 150), random(150, 255));
+                
+                this.color = baseCol;
+                this.weight = random(0.5, 4); 
+            }
+
+            update(speed) {
+                this.pz = this.z; 
+                this.z += speed;  
+
+                if (this.z > width * 0.5) {
+                    this.z = random(-width * 3, -width); 
+                    this.pz = this.z;
+                    this.x = random(-width * 1.5, width * 1.5);
+                    this.y = random(-height * 1.5, height * 1.5);
+                }
+            }
+
+            show(speed) {
+                let streakEnd = speed > 0.5 ? this.pz : this.z - 2;
+                stroke(this.color);
+                strokeWeight(this.weight);
+                line(this.x, this.y, this.z, this.x, this.y, streakEnd);
+            }
+        }
+    </script>
+</body>
+</html>

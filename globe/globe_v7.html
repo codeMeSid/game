@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SINGULARITY: SUPERNOVA EVENT</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.4.0/p5.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+    <style>
+        body { margin: 0; overflow: hidden; background: #000; font-family: 'Courier New', monospace; cursor: none; }
+        #overlay { 
+            position: absolute; inset: 0; background: #000; 
+            display: flex; justify-content: center; align-items: center; 
+            color: #0ff; z-index: 1000; cursor: pointer; text-align: center;
+        }
+        #ui { position: absolute; top: 30px; left: 30px; color: #0ff; pointer-events: none; z-index: 100; }
+        #controls { position: absolute; top: 30px; right: 30px; z-index: 101; }
+        button { 
+            background: transparent; border: 1px solid #0ff; color: #0ff; 
+            padding: 8px 20px; cursor: pointer; text-transform: uppercase; font-family: inherit;
+        }
+        video { display: none; }
+        .label { font-size: 10px; opacity: 0.6; letter-spacing: 2px; }
+        .value { font-size: 22px; margin-bottom: 15px; text-shadow: 0 0 10px #0ff; }
+    </style>
+</head>
+<body>
+    <div id="overlay" onclick="startSystem()">
+        <div>
+            <h1 style="letter-spacing: 10px;">SINGULARITY CORE</h1>
+            <p>[ CLICK TO ESTABLISH NEURAL TETHER ]</p>
+        </div>
+    </div>
+    
+    <div id="ui">
+        <div class="label">CORE STATE</div>
+        <div id="core-state" class="value">OFFLINE</div>
+        <div class="label">CRITICALITY</div>
+        <div id="energy-val" class="value">0%</div>
+    </div>
+
+    <div id="controls"><button id="mute-btn" onclick="toggleMute()">AUDIO: ON</button></div>
+    <video id="webcam"></video>
+
+<script>
+let particles = [];
+let handLandmarks = null;
+let handOpenness = 0;
+let prevOpenness = 0;
+let isSupernova = false; // Persistent state
+let isMuted = false;
+let audioInit = false;
+let synth, noiseSynth, filter;
+
+// --- MEDIAPIPE (Corrected Mirroring & Orientation) ---
+const video = document.getElementById('webcam');
+const hands = new Hands({ locateFile: (f) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${f}` });
+hands.setOptions({ maxNumHands: 1, modelComplexity: 1, minDetectionConfidence: 0.7 });
+
+hands.onResults((res) => {
+    if (res.multiHandLandmarks && res.multiHandLandmarks.length > 0) {
+        handLandmarks = res.multiHandLandmarks[0];
+        
+        let d = dist(handLandmarks[4].x, handLandmarks[4].y, handLandmarks[20].x, handLandmarks[20].y);
+        prevOpenness = handOpenness;
+        handOpenness = lerp(handOpenness, constrain(map(d, 0.05, 0.25, 0, 1), 0, 1), 0.2);
+
+        // TRIGGER SUPERNOVA: If snap is faster than threshold
+        if (handOpenness - prevOpenness > 0.18) {
+            isSupernova = true;
+        }
+
+        // RESET CORE: If fist is closed (Energy < 15%)
+        if (handOpenness < 0.15 && isSupernova) {
+            isSupernova = false;
+        }
+
+        if(audioInit && !isMuted) updateAudio();
+    } else {
+        handLandmarks = null;
+    }
+    updateUI();
+});
+
+new Camera(video, { onFrame: async () => { await hands.send({image: video}); }, width: 640, height: 480 }).start();
+
+// --- AUDIO ---
+function startSystem() {
+    Tone.start();
+    synth = new Tone.FatOscillator("C1", "sawtooth", 10).toDestination().start();
+    filter = new Tone.Filter(200, "lowpass").toDestination();
+    noiseSynth = new Tone.Noise("brown").connect(filter).start();
+    synth.volume.value = -20;
+    noiseSynth.volume.value = -40;
+    audioInit = true;
+    document.getElementById('overlay').style.display = 'none';
+}
+
+function toggleMute() {
+    isMuted = !isMuted;
+    document.getElementById('mute-btn').innerText = isMuted ? "AUDIO: OFF" : "AUDIO: ON";
+    if (isMuted) { synth.volume.rampTo(-100, 0.1); noiseSynth.volume.rampTo(-100, 0.1); }
+    else { synth.volume.rampTo(-20, 0.2); }
+}
+
+function updateUI() {
+    let energy = Math.floor(handOpenness * 100);
+    document.getElementById('energy-val').innerText = `${energy}%`;
+    const el = document.getElementById('core-state');
+    
+    if (isSupernova) {
+        el.innerText = "SUPERNOVA: FLUID DRIFT";
+        el.style.color = "#fff";
+    } else if (!handLandmarks) {
+        el.innerText = "PASSIVE DRIFT";
+        el.style.color = "#555";
+    } else {
+        el.innerText = energy > 85 ? "CRITICAL MASS" : "STABLE CORE";
+        el.style.color = energy > 85 ? "#f0f" : "#0ff";
+    }
+}
+
+function updateAudio() {
+    let baseFreq = isSupernova ? 80 : 40;
+    synth.frequency.rampTo(baseFreq + (handOpenness * 100), 0.1);
+    filter.frequency.value = 100 + (handOpenness * 1000) + (isSupernova ? 3000 : 0);
+}
+
+// --- P5.JS ---
+function setup() {
+    createCanvas(windowWidth, windowHeight, WEBGL);
+    for (let i = 0; i < 1800; i++) particles.push(new Particle());
+}
+
+function draw() {
+    background(0);
+    rotateY(frameCount * 0.003);
+
+    // Hand Visualizer (Fixed Coordinates)
+    if (handLandmarks) {
+        push();
+        translate(0, 0, 150); 
+        stroke(255, 30);
+        strokeWeight(4);
+        handLandmarks.forEach(p => {
+            // Correct mapping for natural 1:1 mirroring
+            let x = (0.5 - p.x) * width;
+            let y = (0.5 - p.y) * height; 
+            point(x, y, 0);
+        });
+        pop();
+    }
+
+    particles.forEach(p => {
+        p.update();
+        p.show();
+    });
+}
+
+class Particle {
+    constructor() {
+        this.pos = p5.Vector.random3D().mult(random(100, 400));
+        this.vel = p5.Vector.random3D();
+        this.acc = createVector(0,0,0);
+        this.noiseOffset = random(1000);
+    }
+
+    update() {
+        let d = this.pos.mag();
+
+        if (isSupernova) {
+            // FLUID SUPERNOVA MOTION
+            let n = noise(this.pos.x * 0.005, this.pos.y * 0.005, frameCount * 0.02);
+            let flow = p5.Vector.fromAngle(n * TWO_PI * 2);
+            this.acc.add(flow.mult(0.5));
+            this.vel.limit(15);
+            
+            // Subtle pull so they don't leave the screen entirely
+            if (d > width) this.acc.add(this.pos.copy().mult(-0.01));
+
+        } else if (handLandmarks) {
+            // GLOBE MODE (Stable/Critical)
+            let targetR = map(handOpenness, 0, 1, 60, 380);
+            let force = (d - targetR) * -0.02;
+            let steer = this.pos.copy().normalize().mult(force);
+            this.acc.add(steer);
+            
+            // Jitter at Critical
+            if (handOpenness > 0.8) this.pos.add(p5.Vector.random3D().mult(5));
+            this.vel.limit(20);
+        } else {
+            // PASSIVE DRIFT
+            let n = noise(this.pos.x * 0.002, frameCount * 0.005 + this.noiseOffset);
+            this.acc.add(p5.Vector.random3D().mult(0.05));
+            this.vel.limit(1.5);
+        }
+
+        this.vel.add(this.acc);
+        this.pos.add(this.vel);
+        this.acc.mult(0);
+        this.vel.mult(0.94); // Friction
+    }
+
+    show() {
+        push();
+        translate(this.pos.x, this.pos.y, this.pos.z);
+        
+        let r = 0, g = 255, b = 255;
+        if (isSupernova) {
+            // Dynamic white/blue flicker
+            r = random(100, 255); g = 255; b = 255;
+        } else {
+            r = map(handOpenness, 0.7, 1, 0, 255);
+            g = map(handOpenness, 0, 1, 255, 50);
+        }
+        
+        stroke(r, g, b, 180);
+        strokeWeight(isSupernova ? random(2, 6) : map(handOpenness, 0, 1, 2, 4));
+        point(0, 0, 0);
+        pop();
+    }
+}
+
+function windowResized() { resizeCanvas(windowWidth, windowHeight); }
+</script>
+</body>
+</html>

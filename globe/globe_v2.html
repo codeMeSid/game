@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NEON ATOM - SONIC CORE</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.4.0/p5.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+    <style>
+        body { margin: 0; overflow: hidden; background: #000; font-family: 'Courier New', monospace; cursor: none; }
+        #ui-overlay {
+            position: absolute; top: 30px; left: 30px; color: #0ff;
+            pointer-events: none; text-transform: uppercase; letter-spacing: 3px;
+            text-shadow: 0 0 15px #0ff; z-index: 10;
+        }
+        #interaction-prompt {
+            position: absolute; bottom: 30px; width: 100%; text-align: center;
+            color: rgba(0, 255, 255, 0.5); letter-spacing: 2px; font-size: 10px;
+        }
+        /* Hide Video */
+        #video-input { display: none; }
+    </style>
+</head>
+<body>
+    <div id="ui-overlay">
+        <div style="font-size: 18px; font-weight: bold;">Quantum Core V.2</div>
+        <div id="sys-stat" style="font-size: 10px; margin-top: 5px;">Awaiting Neural Link...</div>
+    </div>
+    <div id="interaction-prompt">CLICK ANYWHERE TO INITIALIZE AUDIO ENGINE</div>
+    <video id="video-input" playsinline></video>
+
+<script>
+let particles = [];
+let handLandmarks = [];
+let handOpenness = 0;
+let isHandPresent = false;
+let synth, lfo, filter;
+let audioStarted = false;
+
+// MediaPipe Setup
+const videoElement = document.getElementById('video-input');
+const hands = new Hands({locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`});
+
+hands.setOptions({ maxNumHands: 1, modelComplexity: 1, minDetectionConfidence: 0.7 });
+hands.onResults(results => {
+    if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+        isHandPresent = true;
+        handLandmarks = results.multiHandLandmarks[0];
+        
+        let d = dist(handLandmarks[4].x, handLandmarks[4].y, handLandmarks[20].x, handLandmarks[20].y);
+        handOpenness = constrain(map(d, 0.05, 0.28, 0, 1), 0, 1);
+        updateAudio();
+    } else {
+        isHandPresent = false;
+        if(audioStarted) synth.volume.rampTo(-60, 0.5);
+    }
+});
+
+const camera = new Camera(videoElement, {
+    onFrame: async () => { await hands.send({image: videoElement}); },
+    width: 640, height: 480
+});
+camera.start();
+
+// Audio Engine
+function initAudio() {
+    synth = new Tone.MonoSynth({
+        oscillator: { type: "sawtooth" },
+        envelope: { attack: 0.1, release: 1 }
+    }).toDestination();
+    
+    filter = new Tone.AutoFilter("4n").start().toDestination();
+    synth.connect(filter);
+    
+    Tone.start();
+    synth.triggerAttack("C1");
+    synth.volume.value = -10;
+    audioStarted = true;
+    document.getElementById('interaction-prompt').innerText = "LINK ESTABLISHED";
+}
+
+function updateAudio() {
+    if (!audioStarted) return;
+    synth.volume.rampTo(-10, 0.1);
+    let freq = map(handOpenness, 0, 1, 30, 120);
+    synth.setNote(freq);
+    filter.baseFrequency = map(handOpenness, 0, 1, 100, 2000);
+}
+
+function setup() {
+    createCanvas(windowWidth, windowHeight);
+    for (let i = 0; i < 700; i++) particles.push(new Particle());
+    document.addEventListener('mousedown', initAudio);
+}
+
+function draw() {
+    background(0, 40); // Motion blur
+    
+    if (isHandPresent) {
+        drawHandNodes();
+        // Screen shake at critical mass
+        if (handOpenness > 0.8) {
+            translate(random(-5, 5), random(-5, 5));
+        }
+    }
+
+    blendMode(SCREEN);
+    particles.forEach(p => {
+        p.update();
+        p.show();
+    });
+    blendMode(BLEND);
+}
+
+class Particle {
+    constructor() {
+        this.pos = createVector(random(width), random(height));
+        this.vel = createVector(random(-1,1), random(-1,1));
+        this.acc = createVector(0,0);
+    }
+
+    update() {
+        let center = createVector(width/2, height/2);
+        
+        if (isHandPresent) {
+            let targetRadius = map(handOpenness, 0, 1, 40, 350);
+            let d = dist(this.pos.x, this.pos.y, center.x, center.y);
+            let force = (d - targetRadius) * -0.02;
+            
+            let steer = p5.Vector.sub(center, this.pos);
+            steer.normalize();
+            steer.mult(force);
+            this.acc.add(steer);
+            
+            // Jitter
+            let jitterAmt = map(handOpenness, 0.7, 1, 0, 20, true);
+            this.pos.add(random(-jitterAmt, jitterAmt), random(-jitterAmt, jitterAmt));
+        } else {
+            // Free flow
+            let n = noise(this.pos.x * 0.003, this.pos.y * 0.003, frameCount * 0.01);
+            this.acc = p5.Vector.fromAngle(n * TWO_PI).mult(0.1);
+        }
+
+        this.vel.add(this.acc);
+        this.vel.limit(isHandPresent ? 12 : 2);
+        this.pos.add(this.vel);
+        this.acc.mult(0);
+    }
+
+    show() {
+        let r = map(handOpenness, 0.6, 1, 0, 255, true);
+        let g = map(handOpenness, 0, 0.5, 255, 50, true);
+        stroke(r, g, 255, 200);
+        strokeWeight(2);
+        point(this.pos.x, this.pos.y);
+    }
+}
+
+function drawHandNodes() {
+    noFill();
+    stroke(255, 255, 255, 30); // Very faint white glow
+    strokeWeight(1);
+    
+    // Draw connections and points
+    handLandmarks.forEach((lm, i) => {
+        let x = width - (lm.x * width);
+        let y = lm.y * height;
+        ellipse(x, y, 4, 4);
+        
+        // Faint "Neural" lines
+        if (i > 0) {
+            let px = width - (handLandmarks[i-1].x * width);
+            let py = handLandmarks[i-1].y * height;
+            line(x, y, px, py);
+        }
+    });
+}
+
+function windowResized() { resizeCanvas(windowWidth, windowHeight); }
+</script>
+</body>
+</html>

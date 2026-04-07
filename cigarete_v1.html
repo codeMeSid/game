@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Realistic Burning Cigarette</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.0/p5.min.js"></script>
+    <style>
+        body { margin: 0; padding: 0; overflow: hidden; background-color: #080808; }
+        canvas { display: block; }
+    </style>
+</head>
+<body>
+<script>
+let smoke = [];
+let isBurning = false;
+let isPuffing = false;
+let paperHeight = 250; // Initial length of the white part
+let ashHeight = 0;
+let glowIntensity = 0;
+const cigWidth = 35;
+const filterHeight = 70;
+
+function setup() {
+  createCanvas(windowWidth, windowHeight);
+}
+
+function draw() {
+  background(5, 5, 7);
+  
+  let centerX = width / 2;
+  let centerY = height / 2 + 150;
+  let currentTipY = centerY - paperHeight;
+
+  if (isBurning && paperHeight > 0) {
+    // 1. Burning Logic
+    let burnSpeed = isPuffing ? 0.4 : 0.05; 
+    paperHeight -= burnSpeed;
+    ashHeight += burnSpeed;
+    
+    glowIntensity = lerp(glowIntensity, isPuffing ? 255 : 100, 0.1);
+    generateSmoke(centerX, currentTipY);
+
+    // 2. Ash Gravity (if ash gets too long, it "falls")
+    if (ashHeight > random(60, 100)) {
+      ashHeight = 0; 
+    }
+  } else {
+    glowIntensity = lerp(glowIntensity, 0, 0.05);
+  }
+
+  push();
+  // Draw Filter
+  fill(180, 95, 40);
+  rect(centerX - cigWidth/2, centerY, cigWidth, filterHeight, 0, 0, 4, 4);
+
+  // Draw Paper (Remaining)
+  fill(250);
+  rect(centerX - cigWidth/2, currentTipY, cigWidth, paperHeight);
+
+  // Draw Ash
+  if (ashHeight > 0) {
+    fill(60, 60, 60); // Dark grey ash
+    rect(centerX - cigWidth/2, currentTipY - ashHeight, cigWidth, ashHeight);
+    // Add "grain" to ash
+    for(let i=0; i<ashHeight; i+=5) {
+        fill(40, 40, 40, 150);
+        rect(centerX - cigWidth/2, currentTipY - ashHeight + i, cigWidth, 2);
+    }
+  }
+
+  // Draw The Cherry (The Burning Ember)
+  if (isBurning && paperHeight > 0) {
+    drawCherry(centerX, currentTipY, glowIntensity);
+  }
+  pop();
+
+  // Handle Smoke Particles
+  for (let i = smoke.length - 1; i >= 0; i--) {
+    smoke[i].update();
+    smoke[i].show();
+    if (smoke[i].finished()) smoke.splice(i, 1);
+  }
+
+  // UI Text
+  fill(100);
+  textAlign(CENTER);
+  text(isBurning ? "HOLD TO DRAG" : "TAP TO LIGHT", width/2, height - 50);
+}
+
+function drawCherry(x, y, intensity) {
+  for (let r = 20; r > 0; r -= 2) {
+    fill(255, 50, 0, map(r, 0, 20, intensity, 0));
+    ellipse(x, y, cigWidth + r, r * 0.8);
+  }
+  fill(255, 200, 50, intensity);
+  ellipse(x, y, cigWidth, 6);
+}
+
+function mousePressed() {
+  isBurning = true;
+  isPuffing = true;
+}
+
+function mouseReleased() {
+  isPuffing = false;
+}
+
+function generateSmoke(x, y) {
+  let count = isPuffing ? 4 : 1;
+  for (let i = 0; i < count; i++) {
+    smoke.push(new Particle(x, y));
+  }
+}
+
+class Particle {
+  constructor(x, y) {
+    this.x = x + random(-2, 2);
+    this.y = y;
+    this.vx = random(-0.3, 0.3);
+    this.vy = random(-1, -2.5);
+    this.alpha = 180;
+    this.size = random(4, 10);
+    this.drift = random(0.02, 0.08);
+  }
+  finished() { return this.alpha < 0; }
+  update() {
+    this.x += this.vx + sin(frameCount * this.drift);
+    this.y += this.vy;
+    this.alpha -= 1.2;
+    this.size += 0.4;
+  }
+  show() {
+    noStroke();
+    fill(200, 200, 210, this.alpha);
+    ellipse(this.x, this.y, this.size);
+  }
+}
+
+function windowResized() { resizeCanvas(windowWidth, windowHeight); }
+</script>
+</body>
+</html>

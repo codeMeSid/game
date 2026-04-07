@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>2.5D Raycast Drifter</title>
+    <style>
+        body { margin: 0; padding: 0; overflow: hidden; background-color: #050508; font-family: monospace; }
+        #ui { position: absolute; top: 10px; left: 10px; color: #0ff; pointer-events: none; z-index: 10; }
+        .panel { background: rgba(0,0,0,0.8); padding: 10px; border: 1px solid #0ff; margin-bottom: 5px; }
+        kbd { background: #333; padding: 2px 4px; color: #fff; }
+    </style>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.0/p5.min.js"></script>
+</head>
+<body>
+
+<div id="ui">
+    <div class="panel">
+        <h2 id="mode-text">MODE: DRAW TRACK</h2>
+        <p>1. Drag mouse to draw.</p>
+        <p>2. Press <kbd>ENTER</kbd> to start.</p>
+        <p>3. Press <kbd>T</kbd> to toggle Raycasting.</p>
+        <p>4. Press <kbd>R</kbd> to reset.</p>
+    </div>
+</div>
+
+<script>
+let gameState = 'DRAWING';
+let trackPath = [], leftWall = [], rightWall = [];
+let pos, velocity, angle;
+let carLength = 30, carWidth = 15, carRadius = 12;
+let particles = [], sparks = [];
+let showRaycast = true;
+
+// Raycast settings
+const FOV = 60; // Field of View in degrees
+const RAY_COUNT = 100;
+
+function setup() {
+    createCanvas(windowWidth, windowHeight);
+    angleMode(DEGREES);
+    resetGame();
+}
+
+function resetGame() {
+    gameState = 'DRAWING';
+    trackPath = []; leftWall = []; rightWall = [];
+    document.getElementById('mode-text').innerText = "MODE: DRAW TRACK";
+}
+
+function draw() {
+    background(5);
+
+    if (gameState === 'DRAWING') {
+        drawTrackBuilding();
+    } else {
+        updatePhysics();
+        
+        if (showRaycast) {
+            render3DView();
+            // Draw 2D map in a smaller corner or bottom half
+            draw2DMap(0, height / 2, width, height / 2);
+        } else {
+            draw2DMap(0, 0, width, height);
+        }
+    }
+}
+
+function render3DView() {
+    // Horizon/Sky/Floor
+    noStroke();
+    fill(10, 10, 25); rect(width/2, height/4, width, height/2); // Sky
+    fill(20); rect(width/2, 3*height/4, width, height/2); // Floor
+
+    let rayAngleStart = angle - FOV / 2;
+    let w = width / RAY_COUNT;
+
+    for (let i = 0; i < RAY_COUNT; i++) {
+        let rayAngle = rayAngleStart + (i / RAY_COUNT) * FOV;
+        let rayDir = p5.Vector.fromAngle(radians(rayAngle));
+        
+        let closestDist = Infinity;
+        let wallColor = color(0);
+
+        // Check intersection with all wall segments
+        checkWallsForRay(leftWall, rayDir, (d) => {
+            if (d < closestDist) { closestDist = d; wallColor = color(0, 255, 255); }
+        });
+        checkWallsForRay(rightWall, rayDir, (d) => {
+            if (d < closestDist) { closestDist = d; wallColor = color(255, 0, 255); }
+        });
+
+        if (closestDist < 1000) {
+            // Fix fisheye effect
+            let ca = rayAngle - angle;
+            closestDist = closestDist * cos(radians(ca));
+
+            let h = (50 * height) / closestDist; // Project height
+            let brightness = map(closestDist, 0, 800, 255, 50);
+            
+            fill(red(wallColor), green(wallColor), blue(wallColor), brightness);
+            rect(i * w + w/2, height / 4, w + 1, h);
+        }
+    }
+}
+
+function checkWallsForRay(walls, rayDir, callback) {
+    for (let i = 0; i < walls.length - 1; i++) {
+        const pt = intersect(pos.x, pos.y, pos.x + rayDir.x * 1000, pos.y + rayDir.y * 1000, walls[i].x, walls[i].y, walls[i+1].x, walls[i+1].y);
+        if (pt) {
+            let d = p5.Vector.dist(pos, pt);
+            callback(d);
+        }
+    }
+}
+
+function draw2DMap(x, y, w, h) {
+    push();
+    translate(x, y);
+    // Scale down the 2D map if in 2.5D mode
+    if (showRaycast) scale(0.5); 
+
+    // Draw Track
+    strokeWeight(80); stroke(30); noFill();
+    beginShape(); for (let p of trackPath) vertex(p.x, p.y); endShape();
+    
+    drawWalls();
+    renderParticles();
+    drawCar();
+
+    // Visual Raycasting lines in 2D
+    if (showRaycast) {
+        stroke(255, 255, 0, 50);
+        strokeWeight(1);
+        let rayAngleStart = angle - FOV / 2;
+        for (let i = 0; i < RAY_COUNT; i += 5) {
+            let rA = rayAngleStart + (i / RAY_COUNT) * FOV;
+            let rd = p5.Vector.fromAngle(radians(rA)).mult(100);
+            line(pos.x, pos.y, pos.x + rd.x, pos.y + rd.y);
+        }
+    }
+    pop();
+}
+
+function updatePhysics() {
+    let isAcc = keyIsDown(87), isRev = keyIsDown(83), isL = keyIsDown(65), isR = keyIsDown(68);
+    let isNitro = keyIsDown(32), isDrift = keyIsDown(16);
+
+    let power = isNitro ? 1.5 : 0.5;
+    let turn = 4 * (velocity.mag() / 10 + 0.5); // Steer harder at speed
+
+    if (isL) angle -= turn;
+    if (isR) angle += turn;
+
+    let forward = p5.Vector.fromAngle(radians(angle));
+    if (isAcc) velocity.add(p5.Vector.mult(forward, power));
+    if (isRev) velocity.add(p5.Vector.mult(forward, -0.3));
+
+    // Simple Friction/Drift
+    let latFric = isDrift ? 0.98 : 0.8;
+    let fwdSpeed = velocity.dot(forward);
+    let fwdVel = p5.Vector.mult(forward, fwdSpeed);
+    let latVel = p5.Vector.sub(velocity, fwdVel);
+    
+    fwdVel.mult(0.97); latVel.mult(latFric);
+    velocity = p5.Vector.add(fwdVel, latVel);
+    
+    let nextPos = p5.Vector.add(pos, velocity);
+    checkCollisions(nextPos);
+    pos = nextPos;
+
+    if (isNitro && isAcc) spawnNitro(forward);
+}
+
+function checkCollisions(next) {
+    let walls = [...leftWall, ...rightWall];
+    for (let i = 0; i < leftWall.length - 1; i++) {
+        handleWallCollision(next, leftWall[i], leftWall[i+1]);
+        handleWallCollision(next, rightWall[i], rightWall[i+1]);
+    }
+}
+
+function handleWallCollision(p, v, w) {
+    let res = distToSegment(p, v, w);
+    if (res.dist < carRadius) {
+        let n = createVector(-(w.y - v.y), w.x - v.x).normalize();
+        let dot = velocity.dot(n);
+        velocity.sub(p5.Vector.mult(n, 2 * dot)).mult(0.5);
+        if (velocity.mag() > 2) spawnSparks(res.closest, n);
+    }
+}
+
+// Boilerplate helpers
+function distToSegment(p, v, w) {
+    let l2 = p5.Vector.dist(v, w)**2;
+    if (l2 === 0) return {dist: p.dist(v), closest: v};
+    let t = ((p.x - v.x) * (w.x - v.x) + (p.y - v.y) * (w.y - v.y)) / l2;
+    t = Math.max(0, Math.min(1, t));
+    let proj = createVector(v.x + t * (w.x - v.x), v.y + t * (w.y - v.y));
+    return {dist: p.dist(proj), closest: proj};
+}
+
+function intersect(x1, y1, x2, y2, x3, y3, x4, y4) {
+    let den = (x1 - x2) * (y3 - y4) - (y1 - y2) * (x3 - x4);
+    if (den == 0) return;
+    let t = ((x1 - x3) * (y3 - y4) - (y1 - y3) * (x3 - x4)) / den;
+    let u = -((x1 - x2) * (y1 - y3) - (y1 - y2) * (x1 - x3)) / den;
+    if (t > 0 && t < 1 && u > 0 && u < 1) return createVector(x1 + t * (x2 - x1), y1 + t * (y2 - y1));
+}
+
+function mouseDragged() { if (gameState === 'DRAWING') { let m = createVector(mouseX, mouseY); if (trackPath.length === 0 || p5.Vector.dist(trackPath[trackPath.length-1], m) > 20) trackPath.push(m); }}
+function keyPressed() { 
+    if (keyCode === ENTER && trackPath.length > 5) { generateWalls(); pos = trackPath[0].copy(); velocity = createVector(0,0); angle = 0; gameState = 'PLAYING'; document.getElementById('mode-text').innerText = "MODE: RACING"; }
+    if (key.toLowerCase() === 't') showRaycast = !showRaycast;
+    if (key.toLowerCase() === 'r') resetGame();
+}
+
+function generateWalls() {
+    leftWall = []; rightWall = [];
+    for (let i = 0; i < trackPath.length - 1; i++) {
+        let d = p5.Vector.sub(trackPath[i+1], trackPath[i]).normalize();
+        leftWall.push(p5.Vector.add(trackPath[i], createVector(-d.y, d.x).mult(50)));
+        rightWall.push(p5.Vector.add(trackPath[i], createVector(d.y, -d.x).mult(50)));
+    }
+}
+
+function drawTrackBuilding() { stroke(100); noFill(); beginShape(); for(let p of trackPath) vertex(p.x,p.y); endShape(); fill(255,0,0,50); circle(mouseX,mouseY,100); }
+function drawWalls() { strokeWeight(4); stroke(0,255,255); lineList(leftWall); stroke(255,0,255); lineList(rightWall); }
+function lineList(pts) { for(let i=0; i<pts.length-1; i++) line(pts[i].x, pts[i].y, pts[i+1].x, pts[i+1].y); }
+function spawnNitro(f) { particles.push({pos: pos.copy().sub(p5.Vector.mult(f,15)), vel: p5.Vector.mult(f, -5).rotate(random(-10,10)), life: 255}); }
+function spawnSparks(p, n) { for(let i=0; i<5; i++) sparks.push({pos: p.copy(), vel: n.copy().rotate(random(-30,30)).mult(random(2,5)), life: 255}); }
+function renderParticles() {
+    [particles, sparks].forEach((arr, idx) => {
+        for(let i=arr.length-1; i>=0; i--) {
+            let p = arr[i]; p.pos.add(p.vel); p.life -= 10;
+            fill(idx===0?0:255, 200, 255, p.life); noStroke(); circle(p.pos.x, p.pos.y, 5);
+            if(p.life <= 0) arr.splice(i, 1);
+        }
+    });
+}
+function drawCar() { push(); translate(pos.x, pos.y); rotate(angle); fill(255,0,0); rect(0,0,carLength,carWidth); fill(255); rect(10,0,5,carWidth-4); pop(); }
+</script>
+</body>
+</html>

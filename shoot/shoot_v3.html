@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Pistol Shooter - Debug & Stability</title>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+    <style>
+        body { margin: 0; overflow: hidden; background: #050505; font-family: 'Courier New', monospace; }
+        canvas { display: block; }
+        #ui { position: absolute; top: 20px; left: 20px; color: #0f0; pointer-events: none; }
+        #overlay { 
+            position: absolute; inset: 0; background: rgba(0,0,0,0.8); 
+            display: flex; justify-content: center; align-items: center; 
+            color: white; cursor: pointer; z-index: 10;
+        }
+        #video-container { 
+            position: absolute; bottom: 20px; right: 20px; 
+            width: 240px; height: 180px; border: 2px solid #0f0; 
+            border-radius: 4px; overflow: hidden; transform: scaleX(-1);
+        }
+        video { width: 100%; height: 100%; object-fit: cover; opacity: 0.5; }
+    </style>
+</head>
+<body>
+    <div id="overlay"><h1>CLICK TO START & ACTIVATE SOUND</h1></div>
+    <div id="ui">
+        <div>SCORE: <span id="score">0</span></div>
+        <div id="status" style="color: yellow;">Waiting for hand...</div>
+    </div>
+    <div id="video-container"><video id="webcam" autoplay playsinline></video></div>
+    <canvas id="gameCanvas"></canvas>
+
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        const scoreEl = document.getElementById('score');
+        const statusEl = document.getElementById('status');
+        const overlay = document.getElementById('overlay');
+        const video = document.getElementById('webcam');
+
+        let score = 0;
+        let discs = [];
+        let vfx = [];
+        let rawTarget = { x: 0, y: 0 };
+        let smoothedAim = { x: 0, y: 0 };
+        let handLandmarks = null;
+        let canShoot = true;
+        let gameActive = false;
+
+        const SMOOTHING = 0.12; 
+        canvas.width = window.innerWidth;
+        canvas.height = window.innerHeight;
+
+        // --- Audio Logic ---
+        const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        function playPop() {
+            const osc = audioCtx.createOscillator();
+            const gain = audioCtx.createGain();
+            osc.type = 'sine';
+            osc.frequency.setValueAtTime(500, audioCtx.currentTime);
+            osc.frequency.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.1);
+            gain.gain.setValueAtTime(0.2, audioCtx.currentTime);
+            gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.1);
+            osc.connect(gain); gain.connect(audioCtx.destination);
+            osc.start(); osc.stop(audioCtx.currentTime + 0.1);
+        }
+
+        overlay.addEventListener('click', () => {
+            audioCtx.resume();
+            overlay.style.display = 'none';
+            gameActive = true;
+        });
+
+        class Disc {
+            constructor() {
+                const side = Math.floor(Math.random() * 4);
+                if (side === 0) { this.x = -50; this.y = Math.random() * canvas.height; }
+                else if (side === 1) { this.x = canvas.width + 50; this.y = Math.random() * canvas.height; }
+                else if (side === 2) { this.x = Math.random() * canvas.width; this.y = -50; }
+                else { this.x = Math.random() * canvas.width; this.y = canvas.height + 50; }
+                this.color = `hsl(${Math.random() * 360}, 80%, 60%)`;
+                this.radius = 35;
+                const angle = Math.atan2(canvas.height/2 - this.y, canvas.width/2 - this.x);
+                this.vx = Math.cos(angle) * (2 + Math.random() * 2);
+                this.vy = Math.sin(angle) * (2 + Math.random() * 2);
+            }
+            draw() {
+                ctx.beginPath(); ctx.arc(this.x, this.y, this.radius, 0, Math.PI*2);
+                ctx.fillStyle = this.color; ctx.shadowBlur = 15; ctx.shadowColor = this.color;
+                ctx.fill(); ctx.shadowBlur = 0;
+            }
+        }
+
+        function triggerShoot() {
+            playPop();
+            let hit = false;
+            for (let i = discs.length - 1; i >= 0; i--) {
+                const d = discs[i];
+                const dist = Math.sqrt((smoothedAim.x - d.x)**2 + (smoothedAim.y - d.y)**2);
+                if (dist < d.radius + 40) { // High magnetic assist
+                    discs.splice(i, 1); score += 10;
+                    scoreEl.innerText = score;
+                    vfx.push({x: d.x, y: d.y, text: "POP!", life: 1, color: "#0f0"});
+                    hit = true; break;
+                }
+            }
+            if (!hit) vfx.push({x: smoothedAim.x, y: smoothedAim.y, text: "MISS", life: 1, color: "#f44"});
+        }
+
+        const hands = new Hands({ locateFile: (f) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${f}` });
+        hands.setOptions({ maxNumHands: 1, modelComplexity: 1, minDetectionConfidence: 0.5, minTrackingConfidence: 0.5 });
+        
+        hands.onResults((res) => {
+            if (res.multiHandLandmarks && res.multiHandLandmarks.length > 0) {
+                statusEl.innerText = "HAND ACTIVE"; statusEl.style.color = "#0f0";
+                handLandmarks = res.multiHandLandmarks[0];
+                rawTarget.x = (1 - handLandmarks[8].x) * canvas.width;
+                rawTarget.y = handLandmarks[8].y * canvas.height;
+
+                // TRIGGER: Thumb Tip (4) to Index MCP (5)
+                const dx = handLandmarks[4].x - handLandmarks[5].x;
+                const dy = handLandmarks[4].y - handLandmarks[5].y;
+                const dist = Math.sqrt(dx*dx + dy*dy);
+
+                if (dist < 0.08) { // More relaxed trigger distance
+                    if (canShoot && gameActive) { triggerShoot(); canShoot = false; }
+                } else { canShoot = true; }
+            } else {
+                statusEl.innerText = "NO HAND DETECTED"; statusEl.style.color = "red";
+                handLandmarks = null;
+            }
+        });
+
+        new Camera(video, { onFrame: async () => { await hands.send({image: video}); }, width: 640, height: 480 }).start();
+
+        function draw() {
+            ctx.fillStyle = 'rgba(5, 5, 5, 0.4)';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            if (!gameActive) { requestAnimationFrame(draw); return; }
+
+            smoothedAim.x += (rawTarget.x - smoothedAim.x) * SMOOTHING;
+            smoothedAim.y += (rawTarget.y - smoothedAim.y) * SMOOTHING;
+
+            while (discs.length < 4) discs.push(new Disc());
+            discs.forEach((d, i) => {
+                d.x += d.vx; d.y += d.vy; d.draw();
+                if (Math.abs(d.x - canvas.width/2) < 10) discs.splice(i, 1);
+            });
+
+            // Draw Debug Points
+            if (handLandmarks) {
+                ctx.fillStyle = "white";
+                handLandmarks.forEach(p => {
+                    ctx.fillRect((1-p.x)*canvas.width, p.y*canvas.height, 4, 4);
+                });
+            }
+
+            vfx.forEach((v, i) => {
+                ctx.fillStyle = v.color; ctx.font = "bold 24px Arial";
+                ctx.fillText(v.text, v.x, v.y - (1 - v.life) * 50);
+                v.life -= 0.05; if (v.life <= 0) vfx.splice(i, 1);
+            });
+
+            // Crosshair
+            ctx.beginPath(); ctx.arc(smoothedAim.x, smoothedAim.y, 20, 0, Math.PI*2);
+            ctx.strokeStyle = '#0f0'; ctx.lineWidth = 2; ctx.stroke();
+            ctx.moveTo(smoothedAim.x - 30, smoothedAim.y); ctx.lineTo(smoothedAim.x + 30, smoothedAim.y);
+            ctx.moveTo(smoothedAim.x, smoothedAim.y - 30); ctx.lineTo(smoothedAim.x, smoothedAim.y + 30);
+            ctx.stroke();
+
+            requestAnimationFrame(draw);
+        }
+        draw();
+    </script>
+</body>
+</html>

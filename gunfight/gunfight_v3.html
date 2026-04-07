@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Desperado: Deadeye</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.4.0/p5.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.4.0/addons/p5.sound.min.js"></script>
+    <script src="https://unpkg.com/ml5@0.12.2/dist/ml5.min.js"></script>
+    <style>
+        body { margin: 0; background: #050300; display: flex; justify-content: center; align-items: center; font-family: 'Courier New', Courier, monospace; overflow: hidden; }
+        #overlay { position: absolute; background: rgba(10, 5, 0, 0.98); border: 2px solid #5d4037; padding: 40px; width: 450px; text-align: center; z-index: 100; color: #d4af37; box-shadow: 0 0 150px #000; border-radius: 15px; }
+        .btn { background: #4e342e; color: #ffcc80; padding: 15px 45px; cursor: pointer; font-weight: bold; border: 1px solid #d4af37; margin-top: 25px; letter-spacing: 4px; transition: 0.3s; }
+        .btn:hover { background: #d4af37; color: #000; }
+        .loader { border: 3px solid #1a110a; border-top: 3px solid #d4af37; border-radius: 50%; width: 30px; height: 30px; animation: spin 1s linear infinite; margin: 20px auto; }
+        @keyframes spin { 100% { transform: rotate(360deg); } }
+    </style>
+</head>
+<body>
+
+    <div id="overlay">
+        <h1 style="letter-spacing: 8px; margin-bottom: 0;">DEADEYE</h1>
+        <p style="font-size: 10px; margin-top: 5px; opacity: 0.7;">HIGH NOON SIMULATOR v4.0</p>
+        <div id="loading"><div class="loader"></div><p>CALIBRATING AI SENSES...</p></div>
+        <div id="ui" style="display:none;">
+            <p style="text-align: left; font-size: 14px; line-height: 1.6; border-top: 1px solid #333; padding-top: 15px;">
+                1. <b>WALK:</b> Wait for the 10 paces.<br>
+                2. <b>HOLSTER:</b> Drop hand to <b>Bottom Zone</b>.<br>
+                3. <b>DRAW:</b> Raise hand to enter <b>DEADEYE (SLO-MO)</b>.<br>
+                4. <b>FIRE:</b> Point at enemy & flick hand up on signal.
+            </p>
+            <button class="btn" id="startBtn">DRAW WEAPON</button>
+        </div>
+    </div>
+
+    <script>
+        let handpose, facemesh, video;
+        let hands = [], faces = [];
+        let gameState = "LOADING"; 
+        let playerH = 100, enemyH = 100;
+        let zoom = 1, walk = 0, blood = 0, timeScale = 1;
+        let crossX = 400, crossY = 300, offset = 0, ammo = 6;
+        let particles = [];
+        let signalTime = 0;
+        let osc, noise, env;
+
+        function setup() {
+            createCanvas(800, 600);
+            video = createCapture(VIDEO);
+            video.size(640, 480); video.hide();
+
+            // Sound Engine
+            osc = new p5.Oscillator('sine');
+            noise = new p5.Noise('brown');
+            env = new p5.Envelope();
+            env.setADSR(0.001, 0.2, 0.1, 0.5);
+
+            // NESTED INITIALIZATION: Fixes the 'on' of undefined error
+            handpose = ml5.handpose(video, () => {
+                handpose.on("predict", r => hands = r); // Listeners only start when ready
+                
+                facemesh = ml5.facemesh(video, () => {
+                    facemesh.on("predict", r => faces = r);
+                    document.getElementById('loading').style.display = 'none';
+                    document.getElementById('ui').style.display = 'block';
+                });
+            });
+
+            for(let i=0; i<40; i++) particles.push({x: random(width), y: random(height), s: random(1,4)});
+            document.getElementById('startBtn').onclick = begin;
+        }
+
+        function begin() {
+            getAudioContext().resume();
+            document.getElementById('overlay').style.display = 'none';
+            reset();
+        }
+
+        function reset() {
+            gameState = "WALKING"; walk = 0; playerH = 100; enemyH = 100;
+            zoom = 1; ammo = 6; blood = 0; timeScale = 1;
+            noise.start(); noise.amp(0.05, 2);
+        }
+
+        function draw() {
+            background(15, 8, 3);
+            if (gameState === "LOADING") return;
+
+            handleLogic();
+            
+            // 2.5D Atmospheric Render
+            push();
+            if (gameState === "DEADEYE" || gameState === "DRAW") {
+                zoom = lerp(zoom, 3.8, 0.005 * timeScale);
+            }
+            translate(width/2 - (offset * 0.5), height/2);
+            scale(zoom);
+            translate(-width/2, -height/2);
+            
+            drawEnvironment();
+            drawCharacters();
+            pop();
+
+            if (gameState === "DEADEYE") applyDeadeyeFilter();
+
+            drawOverlayVFX();
+            drawHUD();
+        }
+
+        function handleLogic() {
+            // 1. Facemesh Dodge
+            if (faces.length > 0) {
+                let f = faces[0].annotations;
+                let lE = dist(f.leftEyeUpper0[3][0], f.leftEyeUpper0[3][1], f.leftEyeLower0[3][0], f.leftEyeLower0[3][1]);
+                let rE = dist(f.rightEyeUpper0[3][0], f.rightEyeUpper0[3][1], f.rightEyeLower0[3][0], f.rightEyeLower0[3][1]);
+                offset = lE < 3.2 ? -220 : (rE < 3.2 ? 220 : 0);
+            }
+
+            // 2. Handpose Precise Aim
+            if (hands.length > 0) {
+                // Tracking index finger tip for precision
+                let index = hands[0].annotations.indexFinger[3];
+                crossX = lerp(crossX, map(index[0], 640, 0, 0, width), 0.3);
+                crossY = lerp(crossY, map(index[1], 0, 480, 0, height), 0.3);
+
+                // State Transitions
+                if (gameState === "READY" && crossY > 480) {
+                    gameState = "STEADY";
+                    signalTime = millis() + random(3000, 7000);
+                }
+
+                // Rapid raise enters DEADEYE
+                if (gameState === "STEADY" && crossY < 350) {
+                    gameState = "DEADEYE";
+                    timeScale = 0.25; 
+                }
+
+                // Shoot Trigger
+                if (crossY < 180 && ammo > 0 && (gameState === "DEADEYE" || gameState === "DRAW")) {
+                    if (millis() < signalTime) {
+                        gameState = "JAMMED";
+                        playSFX(90, 0.1, 0.5); // Click
+                    } else {
+                        ammo--;
+                        timeScale = 1.0; 
+                        gameState = "DRAW";
+                        playSFX(450, 2, 2.5); // Boom
+                        if (dist(crossX, crossY, width/2, height/2 - 15) < 35) {
+                            enemyH = 0; gameState = "WON";
+                        }
+                    }
+                }
+            }
+
+            // Enemy Attack logic (Slower during Deadeye)
+            if (millis() > signalTime && gameState !== "WON" && gameState !== "WALKING" && gameState !== "READY") {
+                let reaction = 550 / timeScale;
+                if (millis() > signalTime + reaction && enemyH > 0) {
+                    if (offset === 0) {
+                        playerH -= 40; blood = 255;
+                        playSFX(140, 4, 3);
+                    }
+                    if (playerH <= 0) gameState = "LOST";
+                }
+            }
+        }
+
+        function drawEnvironment() {
+            // Ground with gradient dust
+            noStroke();
+            for(let i=0; i<15; i++) {
+                fill(70 - i*4, 40 - i*2, 20);
+                rect(0, 400 + i*15, width, 15);
+            }
+            // Harsh Sun
+            fill(255, 180, 50, 15); ellipse(width/2, 380, 650, 650);
+            // Floating Dust
+            fill(200, 180, 150, 80);
+            particles.forEach(p => {
+                p.x += random(-1.5, 1.5) * timeScale;
+                ellipse(p.x, p.y, p.s);
+            });
+        }
+
+        function drawCharacters() {
+            if (gameState === "WALKING") {
+                walk += 0.005;
+                if (walk >= 1) gameState = "READY";
+            }
+            let ex = lerp(width/2, width/2 + 220, walk);
+            let px = lerp(width/2, width/2 - 220, walk);
+
+            // Enemy Silhouette
+            push(); translate(ex, 450);
+            fill(12, 8, 4); 
+            rect(-35, -145, 70, 145, 8); // Coat
+            fill(240, 200, 170); ellipse(0, -165, 45, 55); // Head
+            if (walk > 0.95) { fill(0); ellipse(-12, -170, 6, 3); ellipse(12, -170, 6, 3); }
+            if (enemyH <= 0) { fill(150, 0, 0); ellipse(random(-5,5), -120, 30, 40); }
+            pop();
+
+            // Player visual (Back to camera)
+            push(); translate(px, 580);
+            fill(45, 35, 25); rect(-70, -180, 140, 250, 15);
+            pop();
+        }
+
+        function applyDeadeyeFilter() {
+            loadPixels();
+            for (let i = 0; i < pixels.length; i += 4) {
+                let avg = (pixels[i] + pixels[i+1] + pixels[i+2]) / 3;
+                pixels[i] = avg + 50; // Boost Red for Sepia
+                pixels[i+1] = avg; 
+                pixels[i+2] = avg - 50;
+            }
+            updatePixels();
+        }
+
+        function drawOverlayVFX() {
+            if (blood > 0) {
+                fill(180, 0, 0, blood); rect(0,0,width,height);
+                blood *= 0.94;
+            }
+            // Dynamic Vignette
+            let v = map(playerH, 100, 0, 0, 600);
+            noFill(); stroke(0); strokeWeight(v); ellipse(width/2, height/2, width*1.6, height*1.6);
+            
+            if (gameState === "LOST") {
+                background(0); fill(255,0,0); textAlign(CENTER); textSize(70); text("WASTED", width/2, height/2);
+                textSize(20); fill(255); text("SPACE TO RE-TRY", width/2, height/2 + 60);
+            }
+        }
+
+        function drawHUD() {
+            // Precision Crosshair
+            push(); translate(crossX, crossY);
+            let hit = dist(crossX, crossY, width/2, height/2 - 15) < 35;
+            stroke(hit ? '#ff0000' : '#ffffff');
+            strokeWeight(2); noFill(); ellipse(0, 0, 45, 45);
+            line(-25, 0, 25, 0); line(0, -25, 0, 25);
+            pop();
+
+            // Status Messages
+            textAlign(CENTER); textSize(45); fill(255);
+            if (gameState === "WALKING") text("TAKE POSITIONS", width/2, 100);
+            if (gameState === "READY") { fill(255, 200, 0); text("HOLSTER (HAND LOW)", width/2, 100); }
+            if (gameState === "DEADEYE") { fill(255, 255, 0); text("DEADEYE", width/2, 100); }
+            if (millis() > signalTime && gameState !== "WALKING" && gameState !== "READY") { 
+                fill(0, 255, 0); text("FIRE!", width/2, 130); 
+            }
+
+            // Ammo Slots
+            for(let i=0; i<6; i++) {
+                fill(i < ammo ? '#d4af37' : '#222');
+                rect(40 + i*28, height - 65, 18, 45, 5);
+            }
+        }
+
+        function playSFX(f, r, v) {
+            osc.freq(f); osc.start();
+            env.setRange(v, 0); env.play(osc, 0, 0.2);
+        }
+
+        function keyPressed() { if (key === ' ') reset(); }
+    </script>
+</body>
+</html>

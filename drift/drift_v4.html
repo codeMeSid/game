@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Autonomous Sensor Simulation</title>
+    <style>
+        body { margin: 0; padding: 0; overflow: hidden; background-color: #0a0a0c; font-family: 'Courier New', Courier, monospace; }
+        #telemetry {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            width: 220px;
+            background: rgba(0, 20, 0, 0.85);
+            border: 1px solid #0f0;
+            color: #0f0;
+            padding: 15px;
+            pointer-events: none;
+            font-size: 12px;
+            box-shadow: 0 0 15px rgba(0,255,0,0.2);
+        }
+        #instructions {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            color: #aaa;
+            background: rgba(0,0,0,0.6);
+            padding: 10px;
+            border-radius: 5px;
+        }
+        h4 { margin: 0 0 10px 0; color: #fff; text-transform: uppercase; letter-spacing: 1px; }
+        .data-row { display: flex; justify-content: space-between; margin-bottom: 4px; }
+        kbd { background: #333; color: #fff; padding: 2px 4px; border-radius: 3px; }
+    </style>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.0/p5.min.js"></script>
+</head>
+<body>
+
+<div id="instructions">
+    <h4>Training Environment</h4>
+    1. Draw a track with <b>Mouse</b>.<br>
+    2. Press <kbd>ENTER</kbd> to deploy car.<br>
+    3. <kbd>W,A,S,D</kbd> to drive.<br>
+    4. <kbd>Shift</kbd> to Drift.
+</div>
+
+<div id="telemetry">
+    <h4>Sensor Array (LIDAR)</h4>
+    <div id="sensor-readout">Waiting for deployment...</div>
+    <hr style="border:0; border-top:1px solid #060; margin:10px 0;">
+    <div class="data-row"><span>Velocity:</span><span id="v-val">0.00</span></div>
+    <div class="data-row"><span>Grip:</span><span id="g-val">Normal</span></div>
+</div>
+
+<script>
+let gameState = 'DRAWING';
+let trackPath = [], leftWall = [], rightWall = [];
+let pos, velocity, angle = 0;
+let carSize = { w: 34, h: 18 };
+let particles = [], sparks = [];
+
+// Sensor Config
+const SENSOR_COUNT = 24; 
+const SENSOR_RANGE = 250;
+let sensorData = [];
+
+function setup() {
+    createCanvas(windowWidth, windowHeight);
+    rectMode(CENTER);
+}
+
+function draw() {
+    background(10, 10, 12);
+
+    if (gameState === 'DRAWING') {
+        drawTrackGuide();
+    } else {
+        updatePhysics();
+        drawTrack();
+        
+        // 1. Run Sensors before drawing car
+        updateSensors();
+        
+        // 2. Render Particles
+        drawVisuals();
+        
+        // 3. Draw Car
+        drawCar();
+        
+        updateTelemetry();
+    }
+}
+
+function updateSensors() {
+    sensorData = [];
+    let walls = [...leftWall, ...rightWall];
+
+    for (let i = 0; i < SENSOR_COUNT; i++) {
+        // Calculate ray angle relative to car heading
+        let rayAngle = angle + (i * (360 / SENSOR_COUNT));
+        let rayDir = p5.Vector.fromAngle(radians(rayAngle));
+        let rayEnd = p5.Vector.add(pos, p5.Vector.mult(rayDir, SENSOR_RANGE));
+
+        let closestHit = null;
+        let minDist = SENSOR_RANGE;
+
+        // Check against all wall segments
+        for (let j = 0; j < leftWall.length - 1; j++) {
+            let hit = intersect(pos.x, pos.y, rayEnd.x, rayEnd.y, leftWall[j].x, leftWall[j].y, leftWall[j+1].x, leftWall[j+1].y);
+            if (hit) {
+                let d = p5.Vector.dist(pos, hit);
+                if (d < minDist) { minDist = d; closestHit = hit; }
+            }
+            let hitR = intersect(pos.x, pos.y, rayEnd.x, rayEnd.y, rightWall[j].x, rightWall[j].y, rightWall[j+1].x, rightWall[j+1].y);
+            if (hitR) {
+                let d = p5.Vector.dist(pos, hitR);
+                if (d < minDist) { minDist = d; closestHit = hitR; }
+            }
+        }
+
+        sensorData.push(minDist / SENSOR_RANGE); // Normalize 0 to 1
+
+        // Draw Sensor Ray
+        strokeWeight(1);
+        if (closestHit) {
+            stroke(255, 0, 0, 150); // Red hit
+            line(pos.x, pos.y, closestHit.x, closestHit.y);
+            noStroke();
+            fill(255, 0, 0, 200);
+            circle(closestHit.x, closestHit.y, 4);
+        } else {
+            stroke(0, 255, 0, 40); // Green clear
+            line(pos.x, pos.y, rayEnd.x, rayEnd.y);
+        }
+    }
+}
+
+function updatePhysics() {
+    let isAcc = keyIsDown(87), isRev = keyIsDown(83), isL = keyIsDown(65), isR = keyIsDown(68), isDrift = keyIsDown(16);
+    
+    // Steering
+    let turnSpeed = map(velocity.mag(), 0, 10, 1, 4);
+    if (isL) angle -= turnSpeed;
+    if (isR) angle += turnSpeed;
+
+    let forward = p5.Vector.fromAngle(radians(angle));
+    if (isAcc) velocity.add(p5.Vector.mult(forward, 0.45));
+    if (isRev) velocity.add(p5.Vector.mult(forward, -0.2));
+
+    // Friction & Drift Logic
+    let lateralFriction = isDrift ? 0.96 : 0.72;
+    let fwdSpeed = velocity.dot(forward);
+    let fwdVel = p5.Vector.mult(forward, fwdSpeed);
+    let latVel = p5.Vector.sub(velocity, fwdVel);
+    
+    fwdVel.mult(0.98); 
+    latVel.mult(lateralFriction);
+    velocity = p5.Vector.add(fwdVel, latVel);
+    
+    let nextPos = p5.Vector.add(pos, velocity);
+    
+    // Simple Circular Collision Bounds
+    let collided = false;
+    [leftWall, rightWall].forEach(wallSet => {
+        for(let i=0; i<wallSet.length-1; i++){
+            let res = distToSegment(nextPos, wallSet[i], wallSet[i+1]);
+            if (res.dist < 12) {
+                let n = createVector(-(wallSet[i+1].y - wallSet[i].y), wallSet[i+1].x - wallSet[i].x).normalize();
+                velocity.reflect(n).mult(0.4);
+                if (velocity.mag() > 1.5) spawnSparks(res.closest, n);
+                collided = true;
+            }
+        }
+    });
+
+    pos = nextPos;
+}
+
+// UI & Data helpers
+function updateTelemetry() {
+    document.getElementById('v-val').innerText = velocity.mag().toFixed(2);
+    document.getElementById('g-val').innerText = keyIsDown(16) ? "DRIFTING" : "STABLE";
+    
+    let labels = ["F", "FR", "R", "BR", "B", "BL", "L", "FL"];
+    let html = "";
+    // Pull 8 cardinal directions from the 24-sensor array
+    for(let i=0; i<8; i++) {
+        let val = sensorData[Math.floor(i * (SENSOR_COUNT/8))];
+        let color = val < 0.3 ? "#f33" : "#0f0";
+        html += `<div class="data-row"><span>${labels[i]}:</span><span style="color:${color}">${(val*100).toFixed(0)}%</span></div>`;
+    }
+    document.getElementById('sensor-readout').innerHTML = html;
+}
+
+// Track Logic
+function mouseDragged() {
+    if (gameState === 'DRAWING') {
+        let m = createVector(mouseX, mouseY);
+        if (trackPath.length === 0 || p5.Vector.dist(trackPath[trackPath.length-1], m) > 25) trackPath.push(m);
+    }
+}
+
+function keyPressed() {
+    if (keyCode === ENTER && trackPath.length > 5) {
+        generateWalls();
+        pos = trackPath[0].copy();
+        velocity = createVector(0,0);
+        gameState = 'PLAYING';
+    }
+    if (key === 'r') { trackPath = []; gameState = 'DRAWING'; }
+}
+
+function generateWalls() {
+    leftWall = []; rightWall = [];
+    for (let i = 0; i < trackPath.length - 1; i++) {
+        let d = p5.Vector.sub(trackPath[i+1], trackPath[i]).normalize();
+        leftWall.push(p5.Vector.add(trackPath[i], createVector(-d.y, d.x).mult(60)));
+        rightWall.push(p5.Vector.add(trackPath[i], createVector(d.y, -d.x).mult(60)));
+    }
+}
+
+// Visual Helpers
+function intersect(x1, y1, x2, y2, x3, y3, x4, y4) {
+    let den = (x1 - x2) * (y3 - y4) - (y1 - y2) * (x3 - x4);
+    if (den == 0) return null;
+    let t = ((x1 - x3) * (y3 - y4) - (y1 - y3) * (x3 - x4)) / den;
+    let u = -((x1 - x2) * (y1 - y3) - (y1 - y2) * (x1 - x3)) / den;
+    if (t >= 0 && t <= 1 && u >= 0 && u <= 1) return createVector(x1 + t * (x2 - x1), y1 + t * (y2 - y1));
+    return null;
+}
+
+function distToSegment(p, v, w) {
+    let l2 = p5.Vector.dist(v, w)**2;
+    if (l2 === 0) return {dist: p.dist(v), closest: v};
+    let t = constrain(((p.x - v.x) * (w.x - v.x) + (p.y - v.y) * (w.y - v.y)) / l2, 0, 1);
+    let proj = createVector(v.x + t * (w.x - v.x), v.y + t * (w.y - v.y));
+    return {dist: p.dist(proj), closest: proj};
+}
+
+function drawTrackGuide() {
+    stroke(50); noFill(); strokeWeight(2); beginShape(); for(let p of trackPath) vertex(p.x, p.y); endShape();
+    fill(255, 255, 255, 20); noStroke(); circle(mouseX, mouseY, 120);
+}
+
+function drawTrack() {
+    strokeWeight(120); stroke(20, 20, 25); noFill();
+    beginShape(); for(let p of trackPath) vertex(p.x, p.y); endShape();
+    strokeWeight(2); stroke(0, 255, 0, 100);
+    for(let i=0; i<leftWall.length-1; i++) line(leftWall[i].x, leftWall[i].y, leftWall[i+1].x, leftWall[i+1].y);
+    for(let i=0; i<rightWall.length-1; i++) line(rightWall[i].x, rightWall[i].y, rightWall[i+1].x, rightWall[i+1].y);
+}
+
+function drawCar() {
+    push();
+    translate(pos.x, pos.y);
+    rotate(radians(angle));
+    
+    // Chassis
+    fill(30); stroke(0, 255, 0); strokeWeight(2);
+    rect(0, 0, carSize.w, carSize.h, 3);
+    
+    // Directional indicator (Arrow)
+    fill(0, 255, 0); noStroke();
+    triangle(10, -5, 10, 5, 15, 0);
+    pop();
+}
+
+function spawnSparks(p, n) { 
+    for(let i=0; i<4; i++) sparks.push({pos: p.copy(), vel: n.copy().rotate(random(-45,45)).mult(random(2,4)), life: 255}); 
+}
+
+function drawVisuals() {
+    for(let i=sparks.length-1; i>=0; i--){
+        let s = sparks[i]; s.pos.add(s.vel); s.life -= 15;
+        stroke(255, 255, 0, s.life); strokeWeight(2); point(s.pos.x, s.pos.y);
+        if(s.life <= 0) sparks.splice(i, 1);
+    }
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,456 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Draw & Drift: Custom Track Collision</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            background-color: #0f0f14;
+        }
+        canvas {
+            display: block;
+        }
+        #ui-layer {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            color: rgba(255, 255, 255, 0.85);
+            font-family: monospace;
+            pointer-events: none;
+            text-shadow: 0 0 5px rgba(0, 0, 0, 1);
+        }
+        kbd {
+            background: rgba(255,255,255,0.2);
+            padding: 2px 6px;
+            border-radius: 3px;
+            color: #fff;
+            font-weight: bold;
+        }
+        .panel {
+            background: rgba(0, 0, 0, 0.5);
+            padding: 15px;
+            border-radius: 8px;
+            border: 1px solid rgba(255,255,255,0.1);
+            margin-bottom: 10px;
+        }
+        h3 { margin-top: 0; color: #ff283c; }
+    </style>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.0/p5.min.js"></script>
+</head>
+<body>
+
+    <div id="ui-layer">
+        <div class="panel" id="draw-instructions">
+            <h3>Mode: DRAWING TRACK</h3>
+            <p>1. <b>Click and Drag</b> your mouse to draw a track.</p>
+            <p>2. The start line is where you begin.</p>
+            <p>3. Press <kbd>ENTER</kbd> to race.</p>
+            <p>4. Press <kbd>R</kbd> to reset and redraw.</p>
+        </div>
+        <div class="panel" id="play-instructions" style="display: none;">
+            <h3>Mode: RACING</h3>
+            <p><kbd>W</kbd> Accelerate &nbsp; | &nbsp; <kbd>S</kbd> Brake/Reverse</p>
+            <p><kbd>A</kbd> / <kbd>D</kbd> Steer</p>
+            <p><kbd>Space</kbd> Nitro &nbsp; | &nbsp; <kbd>Shift</kbd> Drift (E-Brake)</p>
+            <p>Press <kbd>R</kbd> to redraw track.</p>
+        </div>
+    </div>
+
+<script>
+// --- GAME STATES ---
+let gameState = 'DRAWING'; // 'DRAWING' or 'PLAYING'
+
+// --- TRACK DATA ---
+let trackPath = [];
+let leftWall = [];
+let rightWall = [];
+let trackWidth = 100;
+
+// --- CAR DATA ---
+let pos, velocity, angle;
+let carLength = 40;
+let carWidth = 20;
+let carRadius = 14; // Used for collision detection bounds
+
+// --- PARTICLES ---
+let nitroParticles = [];
+let sparkParticles = [];
+
+function setup() {
+    createCanvas(windowWidth, windowHeight);
+    rectMode(CENTER);
+    resetGame();
+}
+
+function resetGame() {
+    gameState = 'DRAWING';
+    trackPath = [];
+    leftWall = [];
+    rightWall = [];
+    nitroParticles = [];
+    sparkParticles = [];
+    document.getElementById('draw-instructions').style.display = 'block';
+    document.getElementById('play-instructions').style.display = 'none';
+}
+
+function draw() {
+    background(15, 15, 20);
+
+    if (gameState === 'DRAWING') {
+        drawTrackBuildingMode();
+    } else if (gameState === 'PLAYING') {
+        updatePhysics();
+        drawTrack();
+        drawStartLine();
+        renderParticles(sparkParticles);
+        renderParticles(nitroParticles);
+        drawCar();
+    }
+}
+
+// ==========================================
+// TRACK DRAWING & GENERATION
+// ==========================================
+
+function mouseDragged() {
+    if (gameState === 'DRAWING') {
+        let mouseVec = createVector(mouseX, mouseY);
+        // Add points if they are far enough apart to create a smooth path
+        if (trackPath.length === 0 || p5.Vector.dist(trackPath[trackPath.length - 1], mouseVec) > 15) {
+            trackPath.push(mouseVec);
+        }
+    }
+}
+
+function keyPressed() {
+    if (keyCode === ENTER && gameState === 'DRAWING' && trackPath.length > 5) {
+        generateWalls();
+        initializeCarOnTrack();
+        gameState = 'PLAYING';
+        document.getElementById('draw-instructions').style.display = 'none';
+        document.getElementById('play-instructions').style.display = 'block';
+    }
+    if (key.toLowerCase() === 'r') {
+        resetGame();
+    }
+}
+
+function generateWalls() {
+    leftWall = [];
+    rightWall = [];
+    for (let i = 0; i < trackPath.length - 1; i++) {
+        let current = trackPath[i];
+        let next = trackPath[i + 1];
+        
+        // Get direction vector
+        let dir = p5.Vector.sub(next, current).normalize();
+        
+        // Rotate 90 degrees left and right for wall offsets
+        let normalLeft = createVector(-dir.y, dir.x).mult(trackWidth / 2);
+        let normalRight = createVector(dir.y, -dir.x).mult(trackWidth / 2);
+        
+        leftWall.push(p5.Vector.add(current, normalLeft));
+        rightWall.push(p5.Vector.add(current, normalRight));
+    }
+    // Add the final points
+    let last = trackPath[trackPath.length - 1];
+    let prev = trackPath[trackPath.length - 2];
+    let dir = p5.Vector.sub(last, prev).normalize();
+    let nLeft = createVector(-dir.y, dir.x).mult(trackWidth / 2);
+    let nRight = createVector(dir.y, -dir.x).mult(trackWidth / 2);
+    leftWall.push(p5.Vector.add(last, nLeft));
+    rightWall.push(p5.Vector.add(last, nRight));
+}
+
+function initializeCarOnTrack() {
+    pos = trackPath[0].copy(); // Start at the first drawn point
+    velocity = createVector(0, 0);
+    // Face the second point
+    let dir = p5.Vector.sub(trackPath[1], trackPath[0]);
+    angle = dir.heading();
+}
+
+function drawTrackBuildingMode() {
+    stroke(100);
+    strokeWeight(2);
+    noFill();
+    
+    // Draw the path as the user drags
+    beginShape();
+    for (let p of trackPath) {
+        vertex(p.x, p.y);
+    }
+    endShape();
+
+    // Show a brush indicator
+    noStroke();
+    fill(255, 40, 60, 100);
+    circle(mouseX, mouseY, trackWidth);
+}
+
+function drawTrack() {
+    // 1. Draw Asphalt (Thick grey line following the center path)
+    noFill();
+    stroke(40, 40, 45);
+    strokeWeight(trackWidth);
+    strokeJoin(ROUND);
+    strokeCap(ROUND);
+    beginShape();
+    for (let p of trackPath) vertex(p.x, p.y);
+    endShape();
+
+    // 2. Draw Neon Barriers
+    strokeWeight(3);
+    drawingContext.shadowBlur = 15;
+    
+    // Left Wall (Cyan)
+    stroke(0, 255, 255);
+    drawingContext.shadowColor = 'cyan';
+    beginShape();
+    for (let p of leftWall) vertex(p.x, p.y);
+    endShape();
+
+    // Right Wall (Magenta)
+    stroke(255, 0, 255);
+    drawingContext.shadowColor = 'magenta';
+    beginShape();
+    for (let p of rightWall) vertex(p.x, p.y);
+    endShape();
+
+    drawingContext.shadowBlur = 0; // reset
+}
+
+function drawStartLine() {
+    if (trackPath.length > 1) {
+        let start = trackPath[0];
+        let p2 = trackPath[1];
+        let dir = p5.Vector.sub(p2, start).normalize();
+        let normal = createVector(-dir.y, dir.x).mult(trackWidth / 2);
+        
+        let pA = p5.Vector.add(start, normal);
+        let pB = p5.Vector.sub(start, normal);
+        
+        stroke(255);
+        strokeWeight(6);
+        drawingPatternLine(pA, pB);
+    }
+}
+
+// Helper to make the start line look like a checkerboard / dashed line
+function drawingPatternLine(p1, p2) {
+    drawingContext.setLineDash([10, 10]);
+    line(p1.x, p1.y, p2.x, p2.y);
+    drawingContext.setLineDash([]);
+}
+
+// ==========================================
+// PHYSICS, DRIFTING & COLLISIONS
+// ==========================================
+
+function updatePhysics() {
+    let isAccelerating = keyIsDown(87); // W
+    let isReversing = keyIsDown(83); // S
+    let isLeft = keyIsDown(65); // A
+    let isRight = keyIsDown(68); // D
+    let isNitro = keyIsDown(32); // Space
+    let isDrifting = keyIsDown(16); // Shift
+
+    let enginePower = isNitro ? 1.4 : 0.4; 
+    let friction = 0.97;
+    let lateralFriction = isDrifting ? 0.95 : 0.70; 
+    let steeringSensitivity = 0.07;
+
+    let forward = p5.Vector.fromAngle(angle);
+    let speed = velocity.mag();
+    
+    // Steering
+    if (speed > 0.5) {
+        let movingForward = velocity.dot(forward) > 0;
+        let steerDir = movingForward ? 1 : -1;
+        if (isLeft) angle -= steeringSensitivity * steerDir;
+        if (isRight) angle += steeringSensitivity * steerDir;
+    }
+    forward = p5.Vector.fromAngle(angle);
+
+    // Acceleration
+    if (isAccelerating) velocity.add(p5.Vector.mult(forward, enginePower));
+    if (isReversing) velocity.add(p5.Vector.mult(forward, -0.3));
+
+    // Drift Physics (Velocity Decomposition)
+    let forwardSpeed = velocity.dot(forward);
+    let forwardVel = p5.Vector.mult(forward, forwardSpeed);
+    let lateralVel = p5.Vector.sub(velocity, forwardVel);
+
+    forwardVel.mult(friction);
+    lateralVel.mult(lateralFriction); 
+
+    velocity = p5.Vector.add(forwardVel, lateralVel);
+    
+    // Apply velocity to position temporarily to check for collisions
+    let nextPos = p5.Vector.add(pos, velocity);
+    
+    // --- COLLISION DETECTION ---
+    let collided = false;
+    let pushBack = createVector(0, 0);
+    let wallNormal = null;
+    let impactPoint = null;
+
+    // Check against left and right walls
+    let checkCollisionWithWall = (wallArray) => {
+        for (let i = 0; i < wallArray.length - 1; i++) {
+            let v = wallArray[i];
+            let w = wallArray[i+1];
+            let result = distToSegment(nextPos, v, w);
+            
+            if (result.dist < carRadius) {
+                collided = true;
+                impactPoint = result.closest;
+                // Calculate normal of the wall segment
+                let segmentDir = p5.Vector.sub(w, v).normalize();
+                let n = createVector(-segmentDir.y, segmentDir.x);
+                // Ensure normal points towards the car
+                let toCar = p5.Vector.sub(nextPos, result.closest);
+                if (n.dot(toCar) < 0) n.mult(-1);
+                
+                wallNormal = n;
+                // Accumulate pushback to prevent tunneling
+                let overlap = carRadius - result.dist;
+                pushBack.add(p5.Vector.mult(n, overlap));
+            }
+        }
+    };
+
+    checkCollisionWithWall(leftWall);
+    checkCollisionWithWall(rightWall);
+
+    if (collided) {
+        // Correct position
+        nextPos.add(pushBack);
+        
+        // Reflect velocity along the wall normal to create a "bounce"
+        // Vnew = V - 2*(V dot N)*N
+        let dotProd = velocity.dot(wallNormal);
+        let reflection = p5.Vector.mult(wallNormal, 2 * dotProd);
+        velocity.sub(reflection);
+        velocity.mult(0.6); // Lose speed on impact (dampening)
+
+        // Spawn Sparks if hitting the wall hard enough
+        if (speed > 3) {
+            spawnSparks(impactPoint, wallNormal, speed);
+        }
+    }
+
+    // Finalize position
+    pos = nextPos;
+
+    // --- NITRO PARTICLES ---
+    if (isNitro && isAccelerating) {
+        for (let i = 0; i < 3; i++) {
+            let offset = p5.Vector.mult(forward, -carLength / 2);
+            let pPos = p5.Vector.add(pos, offset);
+            let pVel = p5.Vector.mult(forward, -random(4, 8));
+            pVel.rotate(random(-0.3, 0.3));
+            nitroParticles.push({
+                pos: pPos, vel: pVel, life: 255, 
+                color: color(random(0, 50), random(200, 255), 255)
+            });
+        }
+    }
+}
+
+// Math helper for point-to-line-segment distance
+function distToSegment(p, v, w) {
+    let l2 = p5.Vector.dist(v, w);
+    l2 = l2 * l2;
+    if (l2 === 0) return { dist: p5.Vector.dist(p, v), closest: v };
+    let t = ((p.x - v.x) * (w.x - v.x) + (p.y - v.y) * (w.y - v.y)) / l2;
+    t = Math.max(0, Math.min(1, t));
+    let projection = createVector(v.x + t * (w.x - v.x), v.y + t * (w.y - v.y));
+    return { dist: p5.Vector.dist(p, projection), closest: projection };
+}
+
+// ==========================================
+// PARTICLES & RENDERING
+// ==========================================
+
+function spawnSparks(origin, normal, impactSpeed) {
+    let numSparks = constrain(Math.floor(impactSpeed * 2), 5, 20);
+    for (let i = 0; i < numSparks; i++) {
+        // Sparks spray out along the normal, with some random spread
+        let spread = p5.Vector.random2D().mult(0.5);
+        let sparkDir = p5.Vector.add(normal, spread).normalize();
+        let sparkVel = p5.Vector.mult(sparkDir, random(2, impactSpeed));
+        
+        sparkParticles.push({
+            pos: origin.copy(),
+            vel: sparkVel,
+            life: 255,
+            color: color(255, random(150, 220), 0) // Yellow/Orange
+        });
+    }
+}
+
+function renderParticles(particleArray) {
+    noStroke();
+    for (let i = particleArray.length - 1; i >= 0; i--) {
+        let p = particleArray[i];
+        p.pos.add(p.vel);
+        
+        // Add a bit of drag/friction to sparks
+        if (particleArray === sparkParticles) {
+            p.vel.mult(0.92); 
+            p.life -= 15;
+        } else {
+            p.life -= 12; // Nitro fades slightly slower
+        }
+        
+        drawingContext.shadowBlur = 10;
+        drawingContext.shadowColor = p.color;
+        
+        p.color.setAlpha(p.life);
+        fill(p.color);
+        circle(p.pos.x, p.pos.y, random(3, 8));
+
+        if (p.life <= 0) particleArray.splice(i, 1);
+    }
+}
+
+function drawCar() {
+    push();
+    translate(pos.x, pos.y);
+    rotate(angle);
+
+    drawingContext.shadowColor = color(255, 30, 50);
+    drawingContext.shadowBlur = 20;
+
+    // Chassis
+    fill(25);
+    stroke(255, 40, 60);
+    strokeWeight(2);
+    rect(0, 0, carLength, carWidth, 4);
+
+    // Cockpit
+    fill(10, 10, 15);
+    noStroke();
+    rect(4, 0, 12, carWidth - 6, 2);
+
+    // Headlights
+    fill(255, 255, 200);
+    drawingContext.shadowColor = color(255, 255, 200);
+    drawingContext.shadowBlur = 10;
+    circle(carLength / 2 - 2, -carWidth / 2 + 4, 3);
+    circle(carLength / 2 - 2, carWidth / 2 - 4, 3);
+
+    pop();
+}
+
+function windowResized() {
+    resizeCanvas(windowWidth, windowHeight);
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SINGULARITY CORE: CRITICAL MASS</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.4.0/p5.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+    <style>
+        body { margin: 0; overflow: hidden; background: #000; cursor: crosshair; }
+        #overlay { 
+            position: absolute; inset: 0; background: radial-gradient(circle, #001 0%, #000 100%); 
+            display: flex; justify-content: center; align-items: center; 
+            color: #0ff; z-index: 1000; font-family: 'Courier New', monospace; text-align: center;
+        }
+        #ui { position: absolute; top: 20px; left: 20px; color: #0ff; font-family: monospace; pointer-events: none; text-transform: uppercase; }
+        video { display: none; }
+    </style>
+</head>
+<body>
+    <div id="overlay" onclick="initSystem()">
+        <div>
+            <h1 style="letter-spacing: 10px; text-shadow: 0 0 20px #0ff;">SINGULARITY</h1>
+            <p>[ CLICK TO ESTABLISH NEURAL LINK ]</p>
+        </div>
+    </div>
+    <div id="ui">
+        <div id="status">OFFLINE</div>
+        <div id="energy">CORE: 0%</div>
+    </div>
+    <video id="webcam"></video>
+
+<script>
+let particles = [];
+let handLandmarks = null;
+let handOpenness = 0;
+let prevOpenness = 0;
+let explosionActive = 0;
+let isLinked = false;
+let synth, noiseSynth, filter;
+
+// --- MEDIAPIPE SETUP ---
+const video = document.getElementById('webcam');
+const hands = new Hands({ locateFile: (f) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${f}` });
+hands.setOptions({ maxNumHands: 1, modelComplexity: 1, minDetectionConfidence: 0.6 });
+
+hands.onResults((res) => {
+    if (res.multiHandLandmarks && res.multiHandLandmarks.length > 0) {
+        handLandmarks = res.multiHandLandmarks[0];
+        document.getElementById('status').innerText = "LINK ACTIVE";
+        
+        // Correct Mirroring: Calculate distance between thumb (4) and pinky (20)
+        let d = dist(handLandmarks[4].x, handLandmarks[4].y, handLandmarks[20].x, handLandmarks[20].y);
+        prevOpenness = handOpenness;
+        handOpenness = lerp(handOpenness, constrain(map(d, 0.04, 0.28, 0, 1), 0, 1), 0.3);
+
+        if (handOpenness - prevOpenness > 0.12) explosionActive = 1.0;
+        if(isLinked) updateAudio();
+    } else {
+        handLandmarks = null;
+        document.getElementById('status').innerText = "SIGNAL LOST";
+        handOpenness = lerp(handOpenness, 0, 0.05);
+    }
+    document.getElementById('energy').innerText = `CORE: ${Math.floor(handOpenness * 100)}%`;
+});
+
+new Camera(video, { onFrame: async () => { await hands.send({image: video}); }, width: 640, height: 480 }).start();
+
+// --- P5.JS LOGIC ---
+function setup() {
+    createCanvas(windowWidth, windowHeight, WEBGL);
+    for (let i = 0; i < 1500; i++) particles.push(new Particle());
+}
+
+function initSystem() {
+    Tone.start();
+    synth = new Tone.Oscillator("G1", "sawtooth").toDestination().start();
+    noiseSynth = new Tone.Noise("pink").start();
+    filter = new Tone.AutoFilter("8n").toDestination().start();
+    noiseSynth.connect(filter);
+    
+    synth.volume.value = -20;
+    noiseSynth.volume.value = -30;
+    
+    isLinked = true;
+    document.getElementById('overlay').style.display = 'none';
+}
+
+function updateAudio() {
+    synth.frequency.rampTo(30 + (handOpenness * 100), 0.1);
+    filter.frequency.value = 100 + (handOpenness * 2000);
+    synth.volume.rampTo(-15 + (handOpenness * 10), 0.1);
+}
+
+function draw() {
+    background(0);
+    
+    // Ambient rotation
+    rotateY(frameCount * 0.003);
+    rotateX(frameCount * 0.001);
+
+    // Light Source (The Core Glow)
+    pointLight(0, 255, 255, 0, 0, 0);
+
+    // Render Hand Points (Fixed Mapping)
+    if (handLandmarks) {
+        push();
+        translate(0, 0, 150);
+        strokeWeight(4);
+        stroke(255, 255, 255, 80);
+        handLandmarks.forEach(p => {
+            // Flipped X coordinate for natural "mirror" feel
+            let x = (0.5 - p.x) * width * 0.8; 
+            let y = (p.y - 0.5) * height * 0.8;
+            point(x, y, 0);
+        });
+        pop();
+    }
+
+    // Critical Mass Effects
+    if (handOpenness > 0.85) {
+        translate(random(-2, 2), random(-2, 2), random(-2, 2));
+    }
+
+    particles.forEach(p => {
+        p.update();
+        p.show();
+    });
+
+    if (explosionActive > 0) explosionActive *= 0.94;
+}
+
+class Particle {
+    constructor() {
+        this.pos = p5.Vector.random3D().mult(random(200, 600));
+        this.vel = createVector(0, 0, 0);
+        this.acc = createVector(0, 0, 0);
+        this.baseColor = color(0, 255, 255);
+    }
+
+    update() {
+        let center = createVector(0, 0, 0);
+        let d = this.pos.mag();
+        
+        // Target Sphere Radius
+        let targetR = map(handOpenness, 0, 1, 60, 450);
+        if (explosionActive > 0.1) targetR += explosionActive * 600;
+
+        // Spring Physics
+        let force = (d - targetR) * -0.015;
+        let steer = this.pos.copy().normalize().mult(force);
+        
+        // If no hand, drift lazily
+        if (!handLandmarks && explosionActive < 0.1) {
+            this.acc.add(p5.Vector.random3D().mult(0.05));
+            this.vel.limit(1);
+        } else {
+            this.acc.add(steer);
+            this.vel.limit(25);
+        }
+
+        // Add vibration at Critical Mass
+        if (handOpenness > 0.8) {
+            this.pos.add(p5.Vector.random3D().mult(handOpenness * 8));
+        }
+
+        this.vel.add(this.acc);
+        this.pos.add(this.vel);
+        this.acc.mult(0);
+        this.vel.mult(0.96); // Friction
+    }
+
+    show() {
+        push();
+        translate(this.pos.x, this.pos.y, this.pos.z);
+        
+        // Color blending for vibrancy
+        let hueVal = map(handOpenness, 0.5, 1, 180, 360); // Cyan to Magenta/Red
+        
+        // Chromatic Aberration effect at high energy
+        if (handOpenness > 0.9 && random() > 0.5) {
+            stroke(255, 255, 255); // Flash white
+        } else {
+            stroke(hueVal, 255, 255, 200);
+        }
+        
+        strokeWeight(map(handOpenness, 0, 1, 2, 5) + (explosionActive * 5));
+        point(0, 0, 0);
+        pop();
+    }
+}
+
+function windowResized() { resizeCanvas(windowWidth, windowHeight); }
+</script>
+</body>
+</html>

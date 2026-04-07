@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SINGULARITY: CRITICAL MASS V3</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.4.0/p5.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+    <style>
+        body { margin: 0; overflow: hidden; background: #000; font-family: 'Courier New', monospace; }
+        #overlay { 
+            position: absolute; inset: 0; background: rgba(0,0,0,0.9); 
+            display: flex; justify-content: center; align-items: center; 
+            color: #0ff; z-index: 1000; cursor: pointer; text-align: center;
+        }
+        #ui { position: absolute; top: 20px; left: 20px; color: #0ff; pointer-events: none; z-index: 100; }
+        #controls { position: absolute; top: 20px; right: 20px; z-index: 101; }
+        button { 
+            background: none; border: 1px solid #0ff; color: #0ff; 
+            padding: 5px 15px; cursor: pointer; text-transform: uppercase;
+            box-shadow: 0 0 10px rgba(0,255,255,0.3);
+        }
+        button:hover { background: rgba(0,255,255,0.2); }
+        video { display: none; }
+        .stat-label { font-size: 10px; opacity: 0.6; }
+        .stat-value { font-size: 18px; margin-bottom: 10px; text-shadow: 0 0 10px #0ff; }
+    </style>
+</head>
+<body>
+    <div id="overlay" onclick="startSystem()">
+        <div>
+            <h1 style="letter-spacing: 5px;">[ INITIATE CORE ]</h1>
+            <p>NEURAL SYNC REQUIRED</p>
+        </div>
+    </div>
+    
+    <div id="ui">
+        <div class="stat-label">CORE FREQUENCY</div>
+        <div id="core-state" class="stat-value">STABLE</div>
+        <div class="stat-label">ENERGY OUTPUT</div>
+        <div id="energy-val" class="stat-value">0%</div>
+    </div>
+
+    <div id="controls">
+        <button id="mute-btn" onclick="toggleMute()">Audio: ON</button>
+    </div>
+
+    <video id="webcam"></video>
+
+<script>
+let particles = [];
+let handLandmarks = null;
+let handOpenness = 0;
+let prevOpenness = 0;
+let explosionPower = 0;
+let isMuted = false;
+let sysRunning = false;
+let synth, noiseSynth, filter;
+
+// --- MEDIAPIPE ---
+const video = document.getElementById('webcam');
+const hands = new Hands({ locateFile: (f) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${f}` });
+hands.setOptions({ maxNumHands: 1, modelComplexity: 1, minDetectionConfidence: 0.7 });
+
+hands.onResults((res) => {
+    if (res.multiHandLandmarks && res.multiHandLandmarks.length > 0) {
+        handLandmarks = res.multiHandLandmarks[0];
+        
+        let d = dist(handLandmarks[4].x, handLandmarks[4].y, handLandmarks[20].x, handLandmarks[20].y);
+        prevOpenness = handOpenness;
+        handOpenness = lerp(handOpenness, constrain(map(d, 0.05, 0.28, 0, 1), 0, 1), 0.2);
+
+        // EXPLOSION LOGIC: Detected by rapid delta in openness
+        if (handOpenness - prevOpenness > 0.12) {
+            explosionPower = 1.0;
+        }
+
+        updateUI();
+        if(sysRunning && !isMuted) updateAudio();
+    } else {
+        handLandmarks = null;
+        handOpenness = lerp(handOpenness, 0, 0.05);
+    }
+});
+
+new Camera(video, { onFrame: async () => { await hands.send({image: video}); }, width: 640, height: 480 }).start();
+
+function startSystem() {
+    Tone.start();
+    synth = new Tone.Oscillator("E1", "sawtooth").toDestination().start();
+    noiseSynth = new Tone.Noise("white").start();
+    filter = new Tone.Filter(200, "lowpass").toDestination();
+    noiseSynth.connect(filter);
+    
+    synth.volume.value = -15;
+    noiseSynth.volume.value = -40;
+    
+    sysRunning = true;
+    document.getElementById('overlay').style.display = 'none';
+}
+
+function toggleMute() {
+    isMuted = !isMuted;
+    document.getElementById('mute-btn').innerText = isMuted ? "Audio: OFF" : "Audio: ON";
+    if (isMuted) {
+        synth.volume.rampTo(-100, 0.2);
+        noiseSynth.volume.rampTo(-100, 0.2);
+    } else {
+        synth.volume.rampTo(-15, 0.2);
+    }
+}
+
+function updateUI() {
+    let energy = Math.floor(handOpenness * 100);
+    document.getElementById('energy-val').innerText = `${energy}%`;
+    
+    let state = "STABLE";
+    let col = "#0ff";
+    if (energy > 40) { state = "UNSTABLE"; col = "#0f0"; }
+    if (energy > 80) { state = "CRITICAL"; col = "#f0f"; }
+    if (explosionPower > 0.5) { state = "SUPERNOVA"; col = "#fff"; }
+    
+    const el = document.getElementById('core-state');
+    el.innerText = state;
+    el.style.color = col;
+    el.style.textShadow = `0 0 15px ${col}`;
+}
+
+function updateAudio() {
+    synth.frequency.rampTo(40 + (handOpenness * 80), 0.1);
+    filter.frequency.value = 100 + (explosionPower * 5000) + (handOpenness * 500);
+}
+
+// --- P5.JS ---
+function setup() {
+    createCanvas(windowWidth, windowHeight, WEBGL);
+    for (let i = 0; i < 1200; i++) particles.push(new Particle());
+}
+
+function draw() {
+    background(0);
+    
+    rotateY(frameCount * 0.002);
+    
+    // Core Lighting
+    pointLight(255, 255, 255, 0, 0, 0);
+
+    // Hand Points (FIXED POSITIONING: Not mirrored, Not upside down)
+    if (handLandmarks) {
+        push();
+        translate(0, 0, 100); 
+        stroke(255, 50);
+        strokeWeight(4);
+        handLandmarks.forEach(p => {
+            // Flipped X and Y for natural movement
+            let x = (0.5 - p.x) * width;
+            let y = (0.5 - p.y) * height; 
+            point(x, y, 0);
+        });
+        pop();
+    }
+
+    // Critical vibration
+    if (handOpenness > 0.85) {
+        translate(random(-5, 5), random(-5, 5), 0);
+    }
+
+    particles.forEach(p => {
+        p.update();
+        p.show();
+    });
+
+    if (explosionPower > 0) explosionPower *= 0.92;
+}
+
+class Particle {
+    constructor() {
+        this.pos = p5.Vector.random3D().mult(random(0, 100));
+        this.vel = createVector(0,0,0);
+        this.acc = createVector(0,0,0);
+    }
+
+    update() {
+        let d = this.pos.mag();
+        let targetR = map(handOpenness, 0, 1, 50, 350);
+        
+        // Add Explosion Force
+        if (explosionPower > 0.01) {
+            targetR += explosionPower * 800;
+        }
+
+        let force = (d - targetR) * -0.02;
+        let steer = this.pos.copy().normalize().mult(force);
+        
+        this.acc.add(steer);
+        
+        // Dynamic Drag
+        let friction = explosionPower > 0.1 ? 0.98 : 0.92;
+        
+        this.vel.add(this.acc);
+        this.pos.add(this.vel);
+        this.acc.mult(0);
+        this.vel.mult(friction);
+    }
+
+    show() {
+        push();
+        translate(this.pos.x, this.pos.y, this.pos.z);
+        
+        // Color shifts based on energy and explosion
+        let r = map(handOpenness, 0.7, 1, 0, 255);
+        let g = map(explosionPower, 0, 1, 255, 0);
+        let b = 255;
+        
+        if (explosionPower > 0.5) { r = 255; g = 255; b = 255; }
+        
+        stroke(r, g, b, 200);
+        strokeWeight(map(handOpenness, 0, 1, 2, 4) + (explosionPower * 6));
+        point(0, 0, 0);
+        pop();
+    }
+}
+
+function windowResized() { resizeCanvas(windowWidth, windowHeight); }
+</script>
+</body>
+</html>

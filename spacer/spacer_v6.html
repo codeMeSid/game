@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Glowdrive Sticky Pilot V6</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.0/p5.min.js"></script>
+    <style>
+        body { 
+            margin: 0; padding: 0; overflow: hidden; 
+            background-color: #000; font-family: 'Courier New', Courier, monospace; 
+            user-select: none;
+        }
+        
+        #loader {
+            position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+            color: #00FFFF; font-size: 1.2rem; letter-spacing: 2px;
+            text-align: center; z-index: 20; transition: opacity 0.5s;
+        }
+
+        #instructions {
+            position: absolute; top: 20px; left: 20px; color: #00FFFF; z-index: 10;
+            background: rgba(0, 10, 20, 0.7); padding: 15px; border-radius: 8px; 
+            border: 1px solid #00FFFF; box-shadow: 0 0 15px rgba(0, 255, 255, 0.2);
+            font-size: 0.85rem; pointer-events: none;
+        }
+        .active-state { color: #00FF00; font-weight: bold; }
+        .locked-state { color: #00FFFF; font-weight: bold; }
+
+        #speed-hud { 
+            position: absolute; bottom: 30px; right: 40px; 
+            color: #00FFFF; z-index: 10; pointer-events: none; text-align: right;
+        }
+        .hud-label { font-size: 0.8rem; letter-spacing: 2px; opacity: 0.7; margin-bottom: 5px; }
+        .hud-value { font-size: 3rem; font-weight: bold; text-shadow: 0 0 15px rgba(0, 255, 255, 0.5); margin: 0; display: flex; align-items: baseline; justify-content: flex-end;}
+        .hud-unit { font-size: 1.2rem; margin-left: 5px; opacity: 0.8; }
+        .warp-active { color: #FF0055 !important; text-shadow: 0 0 20px #FF0055 !important; }
+    </style>
+</head>
+<body>
+
+    <div id="loader">CALIBRATING SENSORS...</div>
+
+    <div id="instructions" style="display: none;">
+        <h3 style="margin:0 0 10px 0; text-transform: uppercase;">Flight Manual</h3>
+        <p>✋ <b>STEER:</b> Open Palm (Tilt L/R)</p>
+        <p>🤏 <b>THROTTLE:</b> Pinch to grab lever</p>
+        <p style="padding-left: 20px; margin-top: 2px; color: #aaa;">↳ Drag UP/DOWN, then let go</p>
+        <hr style="border-color: rgba(0,255,255,0.3); margin: 10px 0;">
+        <p id="steer-status">Steering: OFF</p>
+        <p id="throttle-status">Throttle: IDLE</p>
+    </div>
+
+    <div id="speed-hud" style="display: none;">
+        <div class="hud-label">VELOCITY</div>
+        <div class="hud-value" id="speed-val">0.0<span class="hud-unit">c</span></div>
+    </div>
+
+    <script type="module">
+        import { GestureRecognizer, FilesetResolver } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.3";
+
+        let gestureRecognizer;
+        let video;
+        let stars = [];
+        let modelLoaded = false;
+        let lastVideoTime = -1;
+        let gestureResults = undefined;
+
+        // --- PHYSICS & CONTROLS ---
+        const LERP_SPEED = 0.08;   
+        const LERP_STEER = 0.05;   
+        const LERP_ROLL = 0.08;    
+
+        const IDLE_SPEED = 2;
+        const MAX_SPEED = 200;         
+        const PINCH_THRESHOLD = 0.06; 
+
+        let currentSpeed = IDLE_SPEED;
+        let currentTurnSpeedX = 0; 
+        let currentRollZ = 0;      
+
+        let targetSpeed = IDLE_SPEED; // Starts at idle
+        let targetTurnSpeedX = 0;
+        let targetRollZ = 0;
+
+        window.setup = function() {
+            createCanvas(windowWidth, windowHeight, WEBGL);
+            
+            video = createCapture(VIDEO);
+            video.size(640, 480);
+            video.hide();
+            
+            for (let i = 0; i < 1500; i++) {
+                stars.push(new GlowParticle());
+            }
+
+            initMediaPipe();
+        };
+
+        async function initMediaPipe() {
+            const vision = await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.3/wasm");
+            gestureRecognizer = await GestureRecognizer.createFromOptions(vision, {
+                baseOptions: {
+                    modelAssetPath: "https://storage.googleapis.com/mediapipe-models/gesture_recognizer/gesture_recognizer/float16/1/gesture_recognizer.task",
+                    delegate: "GPU"
+                },
+                runningMode: "VIDEO",
+                numHands: 2 
+            });
+            modelLoaded = true;
+            document.getElementById('loader').style.display = 'none';
+            document.getElementById('instructions').style.display = 'block';
+            document.getElementById('speed-hud').style.display = 'block';
+        }
+
+        window.draw = function() {
+            background(1, 2, 8); 
+
+            if (modelLoaded && video.loadedmetadata && video.elt.currentTime !== lastVideoTime) {
+                lastVideoTime = video.elt.currentTime;
+                gestureResults = gestureRecognizer.recognizeForVideo(video.elt, performance.now());
+            }
+
+            let speedValEl = document.getElementById('speed-val');
+            let steerStatus = document.getElementById('steer-status');
+            let throttleStatus = document.getElementById('throttle-status');
+
+            let isSteering = false;
+            let isThrottling = false;
+
+            if (gestureResults && gestureResults.landmarks.length > 0) {
+                
+                for (let i = 0; i < gestureResults.landmarks.length; i++) {
+                    let hand = gestureResults.landmarks[i];
+                    let gestureName = gestureResults.gestures[i][0].categoryName;
+
+                    // --- CHECK FOR THROTTLE (Pinch Gesture) ---
+                    let thumbTip = hand[4];
+                    let indexTip = hand[8];
+                    let pinchDist = Math.hypot(thumbTip.x - indexTip.x, thumbTip.y - indexTip.y);
+
+                    if (pinchDist < PINCH_THRESHOLD) {
+                        isThrottling = true;
+                        throttleStatus.innerHTML = `Throttle: <span class="active-state">ADJUSTING</span>`;
+                        
+                        let throttleY = (thumbTip.y + indexTip.y) / 2;
+                        
+                        // Set the new target speed based on vertical hand position
+                        targetSpeed = map(throttleY, 0.8, 0.2, IDLE_SPEED, MAX_SPEED);
+                        targetSpeed = constrain(targetSpeed, IDLE_SPEED, MAX_SPEED);
+                    }
+
+                    // --- CHECK FOR STEERING (Open Palm Gesture) ---
+                    if (gestureName === "Open_Palm") {
+                        isSteering = true;
+                        steerStatus.innerHTML = `Steering: <span class="active-state">LOCKED ON</span>`;
+
+                        let dx = hand[9].x - hand[0].x;
+
+                        if (Math.abs(dx) < 0.03) {
+                            dx = 0;
+                        }
+
+                        targetTurnSpeedX = dx * 400; 
+                        targetRollZ = -dx * 2.5; 
+                    }
+                }
+            } 
+
+            // --- UI AND STATE UPDATES FOR WHEN HANDS ARE RELEASED ---
+            
+            // If we are NOT currently pinching, we leave targetSpeed alone so it "sticks".
+            // We just update the UI so the user knows the speed is locked.
+            if (!isThrottling) {
+                if (targetSpeed > IDLE_SPEED + 5) {
+                    throttleStatus.innerHTML = `Throttle: <span class="locked-state">LOCKED</span>`;
+                } else {
+                    throttleStatus.innerHTML = `Throttle: <span style="color:#888888">IDLE</span>`;
+                }
+            }
+
+            // HUD Color Warning
+            if (targetSpeed > MAX_SPEED * 0.8) {
+                speedValEl.classList.add('warp-active');
+            } else {
+                speedValEl.classList.remove('warp-active');
+            }
+
+            // Steering always resets when you drop your hand
+            if (!isSteering) {
+                targetTurnSpeedX = 0;
+                targetRollZ = 0;
+                steerStatus.innerHTML = `Steering: <span style="color:#FF0055">OFF</span>`;
+            }
+
+            // --- SMOOTHING PHYSICS ---
+            currentSpeed = lerp(currentSpeed, targetSpeed, LERP_SPEED);
+            currentTurnSpeedX = lerp(currentTurnSpeedX, targetTurnSpeedX, LERP_STEER); 
+            currentRollZ = lerp(currentRollZ, targetRollZ, LERP_ROLL); 
+
+            speedValEl.innerHTML = `${(currentSpeed).toFixed(1)}<span class="hud-unit">c</span>`;
+
+            // --- RENDER UNIVERSE ---
+            push(); 
+            rotateZ(currentRollZ); 
+            
+            for (let particle of stars) {
+                particle.update(currentSpeed, currentTurnSpeedX);
+                particle.show(currentSpeed);
+            }
+            pop(); 
+        };
+
+        window.windowResized = function() {
+            resizeCanvas(windowWidth, windowHeight);
+        };
+
+        // --- PARTICLE ENGINE ---
+        class GlowParticle {
+            constructor() {
+                this.x = random(-width * 3, width * 3);
+                this.y = random(-height * 3, height * 3);
+                this.z = random(-width * 4, width); 
+                
+                this.px = this.x; 
+                this.pz = this.z; 
+
+                let baseCol = color(random(100, 255), random(200, 255), random(230, 255), random(150, 255));
+                if (random(1) > 0.9) baseCol = color(random(230, 255), random(200, 255), random(100, 150), random(150, 255));
+                
+                this.color = baseCol;
+                this.weight = random(0.5, 4); 
+            }
+
+            update(speed, turnRate) {
+                this.pz = this.z; 
+                this.px = this.x;
+
+                this.z += speed;  
+                this.x += turnRate * (speed * 0.05);
+
+                if (this.z > width * 0.5 || this.x < -width * 4 || this.x > width * 4) {
+                    this.z = random(-width * 4, -width * 2); 
+                    this.pz = this.z;
+                    this.x = random(-width * 3, width * 3);
+                    this.px = this.x;
+                    this.y = random(-height * 3, height * 3);
+                }
+            }
+
+            show(speed) {
+                let stretchZ = speed > 0.5 ? this.pz : this.z - 2;
+                let stretchX = speed > 0.5 ? this.px : this.x;
+
+                stroke(this.color);
+                strokeWeight(this.weight);
+                line(this.x, this.y, this.z, stretchX, this.y, stretchZ);
+            }
+        }
+    </script>
+</body>
+</html>

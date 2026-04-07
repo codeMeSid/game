@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>2D Physics Car Drift Simulation</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            overflow: hidden; /* Prevent scrolling */
+            background-color: #0f0f14; /* Dark background */
+        }
+        canvas {
+            display: block;
+        }
+        #controls {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            color: rgba(255, 255, 255, 0.7);
+            font-family: monospace;
+            pointer-events: none;
+            text-shadow: 0 0 5px rgba(0, 0, 0, 1);
+        }
+        kbd {
+            background: rgba(255,255,255,0.2);
+            padding: 2px 6px;
+            border-radius: 3px;
+            color: #fff;
+        }
+    </style>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.0/p5.min.js"></script>
+</head>
+<body>
+
+    <div id="controls">
+        <h3>Controls</h3>
+        <p><kbd>W</kbd> Accelerate</p>
+        <p><kbd>A</kbd> / <kbd>D</kbd> Steer</p>
+        <p><kbd>S</kbd> Reverse/Brake</p>
+        <p><kbd>Space</kbd> Nitro Booster</p>
+        <p><kbd>Shift</kbd> E-Brake / Drift</p>
+    </div>
+
+<script>
+let pos;
+let velocity;
+let angle = 0;
+let carLength = 40;
+let carWidth = 20;
+
+let particles = [];
+
+function setup() {
+    createCanvas(windowWidth, windowHeight);
+    pos = createVector(width / 2, height / 2);
+    velocity = createVector(0, 0);
+    rectMode(CENTER);
+}
+
+function draw() {
+    background(15, 15, 20); // Deep dark background
+
+    // --- INPUT GATHERING ---
+    let isAccelerating = keyIsDown(87); // W
+    let isReversing = keyIsDown(83); // S
+    let isLeft = keyIsDown(65); // A
+    let isRight = keyIsDown(68); // D
+    let isNitro = keyIsDown(32); // Spacebar
+    let isDrifting = keyIsDown(16); // Shift
+
+    // --- PHYSICS PARAMETERS ---
+    // Increase engine power heavily if nitro is active
+    let enginePower = isNitro ? 1.2 : 0.35; 
+    let friction = 0.97; // Rolling resistance and air drag
+    // Standard grip vs Drift grip (E-brake reduces lateral friction, causing slides)
+    let lateralFriction = isDrifting ? 0.96 : 0.75; 
+    let steeringSensitivity = 0.06;
+
+    // --- MOVEMENT & STEERING LOGIC ---
+    let forward = p5.Vector.fromAngle(angle);
+    let speed = velocity.mag();
+    
+    // Car can only steer efficiently if moving
+    if (speed > 0.5) {
+        // Determine if moving mostly forward or backward to invert steering in reverse
+        let movingForward = velocity.dot(forward) > 0;
+        let steerDir = movingForward ? 1 : -1;
+        
+        if (isLeft) angle -= steeringSensitivity * steerDir;
+        if (isRight) angle += steeringSensitivity * steerDir;
+    }
+    
+    // Re-calculate forward vector after steering
+    forward = p5.Vector.fromAngle(angle);
+
+    // --- ACCELERATION ---
+    if (isAccelerating) {
+        velocity.add(p5.Vector.mult(forward, enginePower));
+    }
+    if (isReversing) {
+        velocity.add(p5.Vector.mult(forward, -0.25));
+    }
+
+    // --- ARCADE DRIFT PHYSICS (Vector Decomposition) ---
+    // We break velocity into two vectors: one pointing forward, one pointing sideways
+    let forwardSpeed = velocity.dot(forward);
+    let forwardVel = p5.Vector.mult(forward, forwardSpeed);
+    let lateralVel = p5.Vector.sub(velocity, forwardVel);
+
+    // Apply different dampening to forward vs sideways motion
+    forwardVel.mult(friction);
+    lateralVel.mult(lateralFriction); // High friction = grip, Low friction = drift slide
+
+    // Recombine into final velocity
+    velocity = p5.Vector.add(forwardVel, lateralVel);
+    pos.add(velocity);
+
+    // --- SCREEN WRAP ---
+    let padding = carLength;
+    if (pos.x > width + padding) pos.x = -padding;
+    if (pos.x < -padding) pos.x = width + padding;
+    if (pos.y > height + padding) pos.y = -padding;
+    if (pos.y < -padding) pos.y = height + padding;
+
+    // --- NITRO PARTICLE SYSTEM ---
+    if (isNitro && isAccelerating) {
+        // Spawn 4 particles per frame for a thick flame
+        for (let i = 0; i < 4; i++) {
+            let offset = p5.Vector.mult(forward, -carLength / 2);
+            let pPos = p5.Vector.add(pos, offset);
+            
+            // Eject particles backward with some random spread
+            let pVel = p5.Vector.mult(forward, -random(3, 7));
+            pVel.rotate(random(-0.4, 0.4));
+            
+            particles.push({
+                pos: pPos,
+                vel: pVel,
+                life: 255,
+                // Cyan/Blue energy flame color
+                color: color(random(0, 100), random(150, 255), 255) 
+            });
+        }
+    }
+
+    // --- DRAW PARTICLES ---
+    noStroke();
+    for (let i = particles.length - 1; i >= 0; i--) {
+        let p = particles[i];
+        p.pos.add(p.vel);
+        p.life -= 12; // Fade out speed
+        
+        // p5.js drawing context to add native canvas glow
+        drawingContext.shadowBlur = 15;
+        drawingContext.shadowColor = p.color;
+        
+        p.color.setAlpha(p.life);
+        fill(p.color);
+        circle(p.pos.x, p.pos.y, random(4, 12));
+
+        if (p.life <= 0) {
+            particles.splice(i, 1);
+        }
+    }
+
+    // --- DRAW CAR ---
+    push();
+    translate(pos.x, pos.y);
+    rotate(angle);
+
+    // Red neon underglow effect
+    drawingContext.shadowColor = color(255, 30, 50);
+    drawingContext.shadowBlur = 20;
+
+    // Main Car Chassis
+    fill(25);
+    stroke(255, 40, 60); // Red outline
+    strokeWeight(2);
+    rect(0, 0, carLength, carWidth, 4);
+
+    // Windshield / Cockpit
+    fill(10, 10, 15);
+    noStroke();
+    rect(4, 0, 12, carWidth - 6, 2);
+
+    // Headlights (adds glowing dots at the front)
+    fill(255, 255, 200);
+    drawingContext.shadowColor = color(255, 255, 200);
+    drawingContext.shadowBlur = 10;
+    circle(carLength / 2 - 2, -carWidth / 2 + 4, 3);
+    circle(carLength / 2 - 2, carWidth / 2 - 4, 3);
+
+    pop();
+}
+
+// Handle window resizing dynamically
+function windowResized() {
+    resizeCanvas(windowWidth, windowHeight);
+}
+</script>
+</body>
+</html>

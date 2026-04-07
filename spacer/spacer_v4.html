@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Glowdrive Fist Pilot V4</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.0/p5.min.js"></script>
+    <style>
+        body { 
+            margin: 0; padding: 0; overflow: hidden; 
+            background-color: #000; font-family: 'Courier New', Courier, monospace; 
+        }
+        
+        /* Loading overlay that disappears once ready */
+        #loader {
+            position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+            color: #00FFFF; font-size: 1.2rem; letter-spacing: 2px;
+            text-align: center; z-index: 20; transition: opacity 0.5s;
+        }
+
+        /* Sleek Bottom-Right HUD */
+        #speed-hud { 
+            position: absolute; bottom: 30px; right: 40px; 
+            color: #00FFFF; z-index: 10; pointer-events: none; 
+            text-align: right;
+        }
+        .hud-label { font-size: 0.8rem; letter-spacing: 2px; opacity: 0.7; margin-bottom: 5px; }
+        .hud-value { font-size: 3rem; font-weight: bold; text-shadow: 0 0 15px rgba(0, 255, 255, 0.5); margin: 0; display: flex; align-items: baseline; justify-content: flex-end;}
+        .hud-unit { font-size: 1.2rem; margin-left: 5px; opacity: 0.8; }
+        
+        /* Warp state styling */
+        .warp-active { color: #FF0055 !important; text-shadow: 0 0 20px #FF0055 !important; }
+    </style>
+</head>
+<body>
+
+    <div id="loader">CALIBRATING SENSORS...<br><span style="font-size: 0.8rem; opacity: 0.7;">(Show 2 fists to fly)</span></div>
+
+    <div id="speed-hud" style="display: none;">
+        <div class="hud-label">VELOCITY</div>
+        <div class="hud-value" id="speed-val">0.0<span class="hud-unit">c</span></div>
+    </div>
+
+    <script type="module">
+        import { GestureRecognizer, FilesetResolver } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.3";
+
+        let gestureRecognizer;
+        let video;
+        let stars = [];
+        let modelLoaded = false;
+        let lastVideoTime = -1;
+        let gestureResults = undefined;
+
+        // --- PHYSICS & CONTROLS ---
+        const LERP_SPEED = 0.08;   
+        const LERP_STEER = 0.05;   
+        const LERP_ROLL = 0.08;    
+
+        const IDLE_SPEED = 4;
+        const MAX_SPEED = 180;         
+        const WARP_SIZE_THRESHOLD = 0.18; // 18% of screen width = WARP
+
+        // Current animated states
+        let currentSpeed = 0;
+        let currentTurnSpeedX = 0; // Sideways particle velocity
+        let currentRollZ = 0;      // Camera banking
+
+        // Targets set by gestures
+        let targetSpeed = 0;
+        let targetTurnSpeedX = 0;
+        let targetRollZ = 0;
+
+        window.setup = function() {
+            createCanvas(windowWidth, windowHeight, WEBGL);
+            
+            video = createCapture(VIDEO);
+            video.size(640, 480);
+            video.hide();
+            
+            for (let i = 0; i < 1500; i++) {
+                stars.push(new GlowParticle());
+            }
+
+            initMediaPipe();
+        };
+
+        async function initMediaPipe() {
+            const vision = await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.3/wasm");
+            gestureRecognizer = await GestureRecognizer.createFromOptions(vision, {
+                baseOptions: {
+                    modelAssetPath: "https://storage.googleapis.com/mediapipe-models/gesture_recognizer/gesture_recognizer/float16/1/gesture_recognizer.task",
+                    delegate: "GPU"
+                },
+                runningMode: "VIDEO",
+                numHands: 2
+            });
+            modelLoaded = true;
+            document.getElementById('loader').style.opacity = '0'; // Hide loader
+            document.getElementById('speed-hud').style.display = 'block'; // Show HUD
+        }
+
+        window.draw = function() {
+            background(1, 2, 8); 
+
+            if (modelLoaded && video.loadedmetadata && video.elt.currentTime !== lastVideoTime) {
+                lastVideoTime = video.elt.currentTime;
+                gestureResults = gestureRecognizer.recognizeForVideo(video.elt, performance.now());
+            }
+
+            let speedValEl = document.getElementById('speed-val');
+
+            if (gestureResults && gestureResults.landmarks.length >= 2) {
+                let hand1 = gestureResults.landmarks[0];
+                let hand2 = gestureResults.landmarks[1];
+                let g1 = gestureResults.gestures[0][0].categoryName;
+                let g2 = gestureResults.gestures[1][0].categoryName;
+
+                if (g1 === "Closed_Fist" && g2 === "Closed_Fist") {
+                    
+                    // --- 1. SPEED (Distance from screen) ---
+                    let w1 = Math.max(...hand1.map(p => p.x)) - Math.min(...hand1.map(p => p.x));
+                    let w2 = Math.max(...hand2.map(p => p.x)) - Math.min(...hand2.map(p => p.x));
+                    let avgHandSize = (w1 + w2) / 2; 
+
+                    if (avgHandSize >= WARP_SIZE_THRESHOLD) {
+                        speedValEl.classList.add('warp-active');
+                        targetSpeed = map(avgHandSize, WARP_SIZE_THRESHOLD, 0.30, 60, MAX_SPEED);
+                    } else {
+                        speedValEl.classList.remove('warp-active');
+                        targetSpeed = map(avgHandSize, 0.05, WARP_SIZE_THRESHOLD, IDLE_SPEED, 40);
+                    }
+                    targetSpeed = constrain(targetSpeed, IDLE_SPEED, MAX_SPEED);
+
+                    // --- 2. STEERING & BANKING (Mirrored Tilt) ---
+                    // Calculate horizontal offset between wrist (0) and middle knuckle (9)
+                    let dx1 = hand1[9].x - hand1[0].x;
+                    let dx2 = hand2[9].x - hand2[0].x;
+                    let avgDx = (dx1 + dx2) / 2;
+
+                    // DEADZONE: Ignore tiny hand twitches
+                    if (Math.abs(avgDx) < 0.03) {
+                        avgDx = 0;
+                    }
+
+                    // Because the webcam is mirrored:
+                    // If you tilt physically LEFT, the knuckles move to the RIGHT side of the camera image.
+                    // So a POSITIVE avgDx means you are tilting physically LEFT.
+                    // If you tilt LEFT, we want the ship to turn LEFT.
+                    // If the ship turns LEFT, the stars must slide across the screen to the RIGHT (Positive X).
+                    
+                    targetTurnSpeedX = avgDx * 400; // Multiplier dictates how fast stars slide sideways
+                    
+                    // Banking (Roll Z): If turning left (Positive dx), we want to bank left (negative Z rotation)
+                    targetRollZ = -avgDx * 2.5; 
+
+                } else {
+                    targetSpeed = IDLE_SPEED; 
+                    targetTurnSpeedX = 0;
+                    targetRollZ = 0;
+                    speedValEl.classList.remove('warp-active');
+                }
+            } else {
+                targetSpeed = 0; 
+                targetTurnSpeedX = 0;
+                targetRollZ = 0;
+                speedValEl.classList.remove('warp-active');
+            }
+
+            // --- SMOOTHING PHYSICS ---
+            currentSpeed = lerp(currentSpeed, targetSpeed, LERP_SPEED);
+            currentTurnSpeedX = lerp(currentTurnSpeedX, targetTurnSpeedX, LERP_STEER); 
+            currentRollZ = lerp(currentRollZ, targetRollZ, LERP_ROLL); 
+
+            // Update UI
+            speedValEl.innerHTML = `${(currentSpeed).toFixed(1)}<span class="hud-unit">c</span>`;
+
+            // --- RENDER UNIVERSE ---
+            push(); 
+            // We only rotate the Z axis to create the "Banking" barrel-roll feel.
+            // The actual steering is done by sliding the particles in X.
+            rotateZ(currentRollZ); 
+            
+            for (let particle of stars) {
+                particle.update(currentSpeed, currentTurnSpeedX);
+                particle.show(currentSpeed);
+            }
+            pop(); 
+        };
+
+        window.windowResized = function() {
+            resizeCanvas(windowWidth, windowHeight);
+        };
+
+        // --- PARTICLE ENGINE ---
+        class GlowParticle {
+            constructor() {
+                // Spawn in a much wider volume so we don't see the edges when turning
+                this.x = random(-width * 3, width * 3);
+                this.y = random(-height * 3, height * 3);
+                this.z = random(-width * 4, width); 
+                
+                this.px = this.x; // Track previous X for diagonal motion blur
+                this.pz = this.z; 
+
+                let baseCol = color(random(100, 255), random(200, 255), random(230, 255), random(150, 255));
+                if (random(1) > 0.9) baseCol = color(random(230, 255), random(200, 255), random(100, 150), random(150, 255));
+                
+                this.color = baseCol;
+                this.weight = random(0.5, 4); 
+            }
+
+            update(speed, turnRate) {
+                this.pz = this.z; 
+                this.px = this.x;
+
+                // Move forward
+                this.z += speed;  
+                
+                // Arcade Steering: Slide the particles horizontally based on turn rate.
+                // We multiply by (speed * 0.05) so you steer faster when flying faster.
+                this.x += turnRate * (speed * 0.05);
+
+                // Recycle particles that fall behind the camera OR slide off the far sides of the screen
+                if (this.z > width * 0.5 || this.x < -width * 4 || this.x > width * 4) {
+                    this.z = random(-width * 4, -width * 2); // Spawn deep in the background
+                    this.pz = this.z;
+                    this.x = random(-width * 3, width * 3);
+                    this.px = this.x;
+                    this.y = random(-height * 3, height * 3);
+                }
+            }
+
+            show(speed) {
+                // Determine length of the motion streak
+                let stretchZ = speed > 0.5 ? this.pz : this.z - 2;
+                let stretchX = speed > 0.5 ? this.px : this.x;
+
+                stroke(this.color);
+                strokeWeight(this.weight);
+                
+                // Draw line in 3D from previous position to current position
+                // This creates diagonal streaks when turning!
+                line(this.x, this.y, this.z, stretchX, this.y, stretchZ);
+            }
+        }
+    </script>
+</body>
+</html>

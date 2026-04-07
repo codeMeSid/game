@@ -1,0 +1,271 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>COSMIC ATOM - BINARY LINK</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.4.0/p5.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+    <style>
+        body { 
+            margin: 0; overflow: hidden; 
+            background: radial-gradient(circle at center, #0a0f25 0%, #000000 100%); 
+            font-family: 'Courier New', Courier, monospace; 
+        }
+        #ui { 
+            position: absolute; top: 30px; left: 30px; color: #0ff; 
+            pointer-events: none; z-index: 100; text-transform: uppercase; 
+            letter-spacing: 3px; text-shadow: 0 0 10px rgba(0, 255, 255, 0.8);
+        }
+        #status { font-weight: bold; font-size: 18px; margin-bottom: 5px; }
+        #overlay { 
+            position: absolute; inset: 0; background: rgba(0,5,15,0.85); 
+            display: flex; flex-direction: column; justify-content: center; align-items: center; 
+            color: #0ff; cursor: pointer; z-index: 1000; text-align: center;
+            backdrop-filter: blur(5px); transition: opacity 0.5s ease;
+        }
+        h1 { text-shadow: 0 0 20px #0ff; letter-spacing: 5px; }
+        .pulse { animation: pulseGlow 2s infinite alternate; }
+        @keyframes pulseGlow {
+            from { opacity: 0.6; text-shadow: 0 0 5px #0ff; }
+            to { opacity: 1; text-shadow: 0 0 25px #0ff, 0 0 40px #0ff; }
+        }
+        video { display: none; }
+    </style>
+</head>
+<body>
+    <div id="overlay">
+        <h1>[ INITIALIZE NEURAL LINK ]</h1>
+        <span class="pulse" style="font-size: 16px; margin-top: 10px;">Click to Sync Audio & Binary Visuals</span>
+    </div>
+    <div id="ui">
+        <div id="status">Scanning Deep Space...</div>
+        <div id="mode" style="font-size: 12px; color: #0aa;">Passive Drift Mode</div>
+    </div>
+    <video id="webcam"></video>
+
+<script>
+let particles = [];
+const numParticles = 1500; // Increased slightly for denser stars
+let handData = []; // Now stores data for multiple hands
+let synth, filter, reverb;
+let audioInit = false;
+
+// MediaPipe Setup
+const video = document.getElementById('webcam');
+const hands = new Hands({ locateFile: (f) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${f}` });
+// UPGRADED: Allow 2 hands for the binary star system
+hands.setOptions({ maxNumHands: 2, modelComplexity: 1, minDetectionConfidence: 0.6 });
+
+hands.onResults((res) => {
+    let activeHands = [];
+    
+    if (res.multiHandLandmarks && res.multiHandLandmarks.length > 0) {
+        let statusText = res.multiHandLandmarks.length === 2 ? "BINARY STAR SYSTEM ENGAGED" : "SINGULARITY SYNCHRONIZED";
+        document.getElementById('status').innerText = statusText;
+        document.getElementById('status').style.color = res.multiHandLandmarks.length === 2 ? "#f0f" : "#0ff";
+        
+        for(let i = 0; i < res.multiHandLandmarks.length; i++) {
+            let landmarks = res.multiHandLandmarks[i];
+            
+            // Calculate Openness
+            let d = dist(landmarks[4].x, landmarks[4].y, landmarks[20].x, landmarks[20].y);
+            let currentOpenness = constrain(map(d, 0.05, 0.3, 0, 1), 0, 1);
+            
+            // Retrieve previous state for this specific hand if it exists
+            let prev = handData[i] ? handData[i].openness : 0;
+            let expl = handData[i] ? handData[i].explosionActive : 0;
+            
+            // Explosion Trigger
+            if (currentOpenness - prev > 0.15) {
+                expl = 1.0;
+            }
+            
+            activeHands.push({
+                openness: currentOpenness,
+                prevOpenness: prev,
+                explosionActive: expl
+            });
+        }
+        
+        handData = activeHands;
+        if(audioInit) updateAudio();
+    } else {
+        handData = [];
+        document.getElementById('status').innerText = "Searching for Signal...";
+        document.getElementById('status').style.color = "#0ff";
+        if(audioInit) synth.volume.rampTo(-60, 1.0); // Fade out smoothly
+    }
+});
+
+new Camera(video, { onFrame: async () => { await hands.send({image: video}); }, width: 640, height: 480 }).start();
+
+function setup() {
+    createCanvas(windowWidth, windowHeight, WEBGL);
+    for (let i = 0; i < numParticles; i++) {
+        particles.push(new Particle(i)); // Pass ID for binary splitting
+    }
+}
+
+function initAudio() {
+    synth = new Tone.FatOscillator("C2", "sawtooth", 40).start();
+    filter = new Tone.LowpassCombFilter(0.1, 0.5, 3000).toDestination();
+    reverb = new Tone.Reverb(3).toDestination(); // Increased reverb for "space" feel
+    synth.connect(filter);
+    filter.connect(reverb);
+    synth.volume.value = -15;
+    audioInit = true;
+    document.getElementById('overlay').style.opacity = '0';
+    setTimeout(() => document.getElementById('overlay').style.display = 'none', 500);
+}
+
+function updateAudio() {
+    if (handData.length > 0) {
+        // Use the maximum openness among visible hands to drive the synth
+        let maxOpenness = Math.max(...handData.map(h => h.openness));
+        let freq = map(maxOpenness, 0, 1, 40, 120);
+        synth.frequency.rampTo(freq, 0.1);
+        filter.resonance.value = map(maxOpenness, 0, 1, 0.1, 0.9);
+        synth.volume.rampTo(-15, 0.2); // Bring volume back if it drifted
+    }
+}
+
+function draw() {
+    background(5, 8, 15); // Deep cosmic blue/black
+    
+    // Add glowing blend mode for vibrant overlapping particles
+    blendMode(ADD); 
+    orbitControl(); 
+    
+    // Global Cosmic Rotation
+    rotateY(frameCount * 0.003);
+    rotateX(frameCount * 0.0015);
+
+    // Process Particles
+    particles.forEach(p => {
+        p.update();
+        p.show();
+    });
+
+    // Decay Explosion for all hands
+    handData.forEach(h => {
+        if (h.explosionActive > 0) h.explosionActive *= 0.95;
+    });
+    
+    blendMode(BLEND); // Reset blend mode at end of frame
+}
+
+class Particle {
+    constructor(id) {
+        this.id = id;
+        this.reset();
+    }
+
+    reset() {
+        this.pos = p5.Vector.random3D().mult(random(10, 50));
+        this.vel = createVector(0, 0, 0);
+        this.acc = createVector(0, 0, 0);
+    }
+
+    update() {
+        if (handData.length > 0) {
+            // Determine which star this particle orbits
+            let targetHandIndex = this.id % handData.length;
+            let targetHand = handData[targetHandIndex];
+            
+            let targetCenter = createVector(0, 0, 0);
+            
+            // BINARY STAR SYSTEM LOGIC
+            if (handData.length === 2) {
+                let orbitalRadius = 180;
+                let angle = frameCount * 0.02; // Speed of binary orbit
+                
+                // Offset the two centers to orbit around each other
+                if (targetHandIndex === 0) {
+                    targetCenter.set(cos(angle) * orbitalRadius, sin(angle * 0.5) * orbitalRadius * 0.5, sin(angle) * orbitalRadius);
+                } else {
+                    targetCenter.set(cos(angle + PI) * orbitalRadius, sin((angle + PI) * 0.5) * orbitalRadius * 0.5, sin(angle + PI) * orbitalRadius);
+                }
+            }
+
+            let targetRadius = map(targetHand.openness, 0, 1, 40, 300);
+            
+            if (targetHand.explosionActive > 0.1) {
+                targetRadius *= (1 + targetHand.explosionActive * 5);
+            }
+
+            // Gravitational Pull towards the orbital shell of its assigned center
+            let d = p5.Vector.dist(this.pos, targetCenter);
+            let force = (d - targetRadius) * -0.015; 
+            let steer = p5.Vector.sub(this.pos, targetCenter).normalize().mult(force);
+            this.acc.add(steer);
+
+            // Orbital swirl force (tangential)
+            let up = createVector(0, 1, 0);
+            let tangent = p5.Vector.cross(p5.Vector.sub(this.pos, targetCenter).normalize(), up).mult(1.5);
+            this.acc.add(tangent);
+
+            // Jitter for energy vibration
+            let jitter = map(targetHand.openness, 0.8, 1, 0, 12, true);
+            this.pos.add(p5.Vector.random3D().mult(jitter));
+            
+            this.maxSpeed = targetHand.explosionActive > 0.1 ? 35 : 18;
+        } else {
+            // Passive Drift
+            let noiseForce = p5.Vector.random3D().mult(0.08);
+            this.acc.add(noiseForce);
+            this.maxSpeed = 1.5;
+        }
+
+        this.vel.add(this.acc);
+        this.vel.limit(this.maxSpeed);
+        this.pos.add(this.vel);
+        this.acc.mult(0);
+    }
+
+    show() {
+        push();
+        translate(this.pos.x, this.pos.y, this.pos.z);
+        
+        if (handData.length > 0) {
+            let targetHandIndex = this.id % handData.length;
+            let targetHand = handData[targetHandIndex];
+            let op = targetHand.openness;
+            let exp = targetHand.explosionActive;
+            
+            let r, g, b;
+            
+            // Color Mapping based on assigned Star
+            if (targetHandIndex === 0) {
+                // Star 1: Cyan / Blue Core
+                r = map(op + exp, 0.7, 1.5, 0, 255, true);
+                g = map(op, 0, 1, 150, 255, true);
+                b = 255;
+            } else {
+                // Star 2: Magenta / Gold Core
+                r = 255;
+                g = map(op + exp, 0.7, 1.5, 50, 255, true);
+                b = map(op, 0, 1, 200, 50, true);
+            }
+            
+            stroke(r, g, b, 220);
+            // Larger points during explosion or high openness
+            strokeWeight(2 + exp * 8 + op * 3);
+        } else {
+            // Passive Drift Colors
+            stroke(0, 200, 255, 120);
+            strokeWeight(2);
+        }
+        
+        point(0, 0, 0);
+        pop();
+    }
+}
+
+function windowResized() { resizeCanvas(windowWidth, windowHeight); }
+window.addEventListener('mousedown', () => { if(!audioInit) initAudio(); });
+</script>
+</body>
+</html>

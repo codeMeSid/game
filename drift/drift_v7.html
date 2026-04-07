@@ -1,0 +1,397 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Pro Sensor Drifter - Damage Model</title>
+    <style>
+        body { margin: 0; padding: 0; overflow: hidden; background-color: #050507; font-family: monospace; }
+        #ui { position: absolute; top: 20px; left: 20px; color: #fff; pointer-events: none; text-shadow: 0 0 5px #000; z-index: 10; }
+        #diag { position: absolute; top: 20px; right: 20px; width: 180px; text-align: right; color: #fff; z-index: 10; pointer-events: none; }
+        .panel { background: rgba(255, 255, 255, 0.05); padding: 12px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.1); margin-bottom: 10px;}
+        kbd { background: #444; padding: 2px 5px; border-radius: 3px; color: #ff283c; }
+        h3 { margin: 0 0 10px 0; color: #0ff; letter-spacing: 2px; }
+        #health-bar-container { width: 100%; height: 10px; background: #222; border-radius: 5px; overflow: hidden; border: 1px solid #444;}
+        #health-bar-fill { width: 100%; height: 100%; background: lime; transition: width 0.2s, background-color 0.2s; }
+    </style>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.0/p5.min.js"></script>
+</head>
+<body>
+
+<div id="ui">
+    <div class="panel">
+        <h3>SYSTEM: ACTIVE</h3>
+        <p><kbd>W/A/S/D</kbd> Drive</p>
+        <p><kbd>SPACE</kbd> Nitro Boost</p>
+        <p><kbd>SHIFT</kbd> Drift</p>
+        <div id="respawn-msg" style="display:none; color:#f33; font-weight:bold; margin-top:10px;">PRESS <kbd>P</kbd> TO RESTORE</div>
+    </div>
+    <div class="panel">
+        <div style="margin-bottom: 5px;">OVERALL INTEGRITY</div>
+        <div id="health-bar-container"><div id="health-bar-fill"></div></div>
+    </div>
+</div>
+
+<div id="diag"></div>
+
+<script>
+let pos, velocity, angle = 0;
+let carLength = 40, carWidth = 20, carRadius = 14;
+let trackPath = [], leftWall = [], rightWall = [];
+let nitroParticles = [], sparks = [], explosionParticles = [];
+
+// Game State
+let carAlive = true;
+let overallHealth = 100;
+
+// Damage Zones (0 to 1 damage percentage)
+let damageMap = {
+    engine: 0, // Hood
+    body: 0,   // Roof
+    fL: 0, fR: 0, // Front Left/Right Bumpers
+    bL: 0, bR: 0  // Back Left/Right Bumpers
+};
+
+// Sensor & Physics config (Base values)
+const SENSOR_COUNT = 24; 
+const SENSOR_RANGE = 350;
+let basePower = 0.45;
+let baseTurn = 0.06;
+let baseNitro = 1.4;
+
+function setup() {
+    createCanvas(windowWidth, windowHeight);
+    rectMode(CENTER);
+    resetCar();
+}
+
+function resetCar() {
+    pos = createVector(width / 2, height / 2);
+    velocity = createVector(0, 0);
+    angle = 0;
+    overallHealth = 100;
+    carAlive = true;
+    for (let part in damageMap) damageMap[part] = 0;
+    explosionParticles = [];
+    document.getElementById('respawn-msg').style.display = 'none';
+}
+
+function draw() {
+    background(5, 5, 8);
+
+    if (carAlive) {
+        updatePhysics();
+        drawTrack();
+        drawLidar();
+        renderParticles(nitroParticles, 'nitro');
+    } else {
+        // Explosion update loop
+        renderParticles(explosionParticles, 'explosion');
+        drawTrack(); // Keep track visible
+    }
+    
+    // Always render sparks
+    renderParticles(sparks, 'spark');
+
+    // Draw Car and UI
+    drawCar();
+    drawDamageMinimap();
+    updateUI();
+}
+
+// ==========================================
+// PHYSICS & DAMAGE LOGIC
+// ==========================================
+
+function updatePhysics() {
+    let isAcc = keyIsDown(87), isRev = keyIsDown(83), isL = keyIsDown(65), isR = keyIsDown(68);
+    let isNitro = keyIsDown(32), isDrift = keyIsDown(16);
+
+    // DYNAMIC PERFORMANCE ALTERATION
+    // Engine Damage affects speed
+    let engineFactor = 1 - (damageMap.engine * 0.7); // lose up to 70% power
+    let enginePower = (isNitro ? baseNitro : basePower) * engineFactor;
+    
+    // Body Damage affects steering
+    let bodyFactor = 1 - (damageMap.body * 0.5); // lose up to 50% steering
+    let turnSensitivity = (isDrift ? 0.09 : baseTurn) * bodyFactor;
+
+    let speed = velocity.mag();
+    if (speed > 0.5) {
+        let dir = velocity.dot(p5.Vector.fromAngle(angle)) > 0 ? 1 : -1;
+        if (isL) angle -= turnSensitivity * dir;
+        if (isR) angle += turnSensitivity * dir;
+    }
+
+    let forward = p5.Vector.fromAngle(angle);
+    if (isAcc) velocity.add(p5.Vector.mult(forward, enginePower));
+    if (isRev) velocity.add(p5.Vector.mult(forward, -0.3));
+
+    // Friction & Drift
+    let lateralFriction = isDrift ? 0.97 : 0.75;
+    let fwdSpeed = velocity.dot(forward);
+    let fwdVel = p5.Vector.mult(forward, fwdSpeed);
+    let latVel = p5.Vector.sub(velocity, fwdVel);
+    
+    fwdVel.mult(0.97); 
+    latVel.mult(lateralFriction);
+    velocity = p5.Vector.add(fwdVel, latVel);
+    
+    let nextPos = p5.Vector.add(pos, velocity);
+
+    // --- COLLISION MANAGER WITH DAMAGE HANDLING ---
+    let hitSomething = false;
+
+    // Handle Collision + Damage function
+    let handleCollision = (colPoint, normal, impactSpeed) => {
+        velocity.reflect(normal).mult(0.5); // Bounce
+        spawnSparks(colPoint, normal);
+        
+        if (impactSpeed > 2.5) {
+            applyDamage(colPoint, impactSpeed);
+            hitSomething = true;
+        }
+    };
+
+    // Canvas Edge Collisions
+    if (nextPos.x < carRadius) { nextPos.x = carRadius; handleCollision(createVector(0, nextPos.y), createVector(1, 0), abs(velocity.x)); }
+    if (nextPos.x > width - carRadius) { nextPos.x = width - carRadius; handleCollision(createVector(width, nextPos.y), createVector(-1, 0), abs(velocity.x)); }
+    if (nextPos.y < carRadius) { nextPos.y = carRadius; handleCollision(createVector(nextPos.x, 0), createVector(0, 1), abs(velocity.y)); }
+    if (nextPos.y > height - carRadius) { nextPos.y = height - carRadius; handleCollision(createVector(nextPos.x, height), createVector(0, -1), abs(velocity.y)); }
+
+    // Track Wall Collisions
+    [leftWall, rightWall].forEach(wall => {
+        for(let i=0; i<wall.length-1; i++){
+            let res = distToSegment(nextPos, wall[i], wall[i+1]);
+            if(res.dist < carRadius) {
+                let n = createVector(-(wall[i+1].y - wall[i].y), wall[i+1].x - wall[i].x).normalize();
+                if(p5.Vector.sub(nextPos, res.closest).dot(n) < 0) n.mult(-1);
+                handleCollision(res.closest, n, speed);
+                nextPos = p5.Vector.add(res.closest, p5.Vector.mult(n, carRadius));
+            }
+        }
+    });
+
+    pos = nextPos;
+
+    // Nitro Spawn
+    if (isNitro && isAcc && carAlive) {
+        for(let i=0; i<3; i++) {
+            nitroParticles.push({
+                pos: pos.copy().sub(p5.Vector.mult(forward, 15)),
+                vel: p5.Vector.mult(forward, -random(5, 10)).rotate(random(-0.2, 0.2)),
+                life: 255
+            });
+        }
+    }
+}
+
+function applyDamage(hitPoint, speed) {
+    // 1. Convert hitPoint to Car Local Space to identify part
+    let hitRel = p5.Vector.sub(hitPoint, pos);
+    let heading = velocity.heading(); // Direction of travel
+    hitRel.rotate(-heading); // Local space relative to motion
+
+    let dmgAmount = map(speed, 2.5, 15, 0.05, 0.35); // Base damage amount
+    dmgAmount = constrain(dmgAmount, 0, 1);
+
+    // 2. Identify Zone
+    let zone = '';
+    // Front vs Back
+    if (hitRel.x > carLength/6) { // Impact on Front
+        zone = hitRel.y > 0 ? 'fR' : 'fL';
+        // Major impacts propagate to Engine
+        if (dmgAmount > 0.15) damageMap.engine = constrain(damageMap.engine + dmgAmount * 0.5, 0, 1);
+    } else if (hitRel.x < -carLength/6) { // Impact on Back
+        zone = hitRel.y > 0 ? 'bR' : 'bL';
+    } else {
+        // Impact on middle sides targets Body
+        zone = 'body';
+        damageMap.body = constrain(damageMap.body + dmgAmount, 0, 1);
+    }
+
+    // Apply specific zone damage
+    if(zone !== 'body' && zone !== 'engine') {
+        damageMap[zone] = constrain(damageMap[zone] + dmgAmount, 0, 1);
+    }
+
+    // Body also takes damage on heavy bumper hits (Chassis twist)
+    if (dmgAmount > 0.2) damageMap.body = constrain(damageMap.body + dmgAmount * 0.2, 0, 1);
+
+    // 3. Update Overall Health
+    // Overall health is inverse of the sum of total damage, weighted
+    let totalDmg = (damageMap.engine * 2) + (damageMap.body * 1.5) + damageMap.fL + damageMap.fR + damageMap.bL + damageMap.bR;
+    overallHealth = map(totalDmg, 0, 8, 100, 0); // Engine/Body are weighted heavier
+    overallHealth = constrain(overallHealth, 0, 100);
+
+    // 4. Trigger Explosion
+    if (overallHealth <= 0 && carAlive) {
+        triggerExplosion();
+    }
+}
+
+function triggerExplosion() {
+    carAlive = false;
+    velocity.mult(0.1); // Stop car
+    // Heavily spawn particles
+    for (let i = 0; i < 150; i++) {
+        let pVel = p5.Vector.random2D().mult(random(2, 12));
+        explosionParticles.push({
+            pos: pos.copy().add(p5.Vector.random2D().mult(random(0,20))),
+            vel: pVel,
+            life: random(100, 255),
+            type: random() > 0.4 ? 'fire' : 'smoke',
+            size: random(10, 30)
+        });
+    }
+    // Add glowing residual embers
+    for (let i=0; i<30; i++) {
+        explosionParticles.push({
+            pos: pos.copy().add(p5.Vector.random2D().mult(random(0,15))),
+            vel: p5.Vector.random2D().mult(random(0.5, 2)),
+            life: random(200, 300),
+            type: 'ember',
+            size: random(3, 6)
+        });
+    }
+    document.getElementById('respawn-msg').style.display = 'block';
+}
+
+// ==========================================
+// VISUALS & RENDERING
+// ==========================================
+
+// Map part damage to colors (Green -> Dark Red)
+function getDamageColor(dmg) {
+    return lerpColor(color(0, 200, 0), color(100, 0, 0), dmg);
+}
+
+function drawDamageMinimap() {
+    push();
+    // Position minimap top right
+    let mw = 140; let mh = 100;
+    translate(width - mw - 20, 20);
+    
+    // Background
+    fill(10, 10, 15, 200); stroke(50); strokeWeight(1);
+    rect(mw/2, mh/2, mw, mh, 5);
+    
+    // Car Wireframe center
+    translate(mw/2, mh/2);
+    rotate(-HALF_PI); // Orient top up in UI
+    
+    noFill(); strokeWeight(2);
+    
+    // RENDER ZONES
+    // Hood (Engine)
+    fill(getDamageColor(damageMap.engine));
+    rect(10, 0, 20, carWidth, 2);
+    
+    // Roof (Body)
+    fill(getDamageColor(damageMap.body));
+    rect(-5, 0, 15, carWidth - 6, 2);
+    
+    // Bumpers
+    fill(getDamageColor(damageMap.fL)); rect(21, -8, 6, 8, 1); // fL
+    fill(getDamageColor(damageMap.fR)); rect(21, 8, 6, 8, 1);  // fR
+    fill(getDamageColor(damageMap.bL)); rect(-16, -8, 6, 8, 1); // bL
+    fill(getDamageColor(damageMap.bR)); rect(-16, 8, 6, 8, 1);  // bR
+
+    // Labels (Subtle)
+    rotate(HALF_PI); fill(200); noStroke(); textAlign(CENTER); textSize(10);
+    text("ENGINE", 0, -mh/2 + 15);
+    text("DIAGNOSTICS", 0, mh/2 - 8);
+    pop();
+}
+
+function drawCar() {
+    if (!carAlive) return; // Don't draw broken chassis, just particles cover it
+
+    push();
+    translate(pos.x, pos.y);
+    rotate(angle);
+
+    drawingContext.shadowBlur = 15;
+    drawingContext.shadowColor = lerpColor(color(255, 40, 60), color(100,0,0), 1 - (overallHealth/100));
+
+    // Chassis based on Body Damage
+    fill(lerpColor(color(25), color(10,0,0), damageMap.body));
+    stroke(255, 40, 60);
+    strokeWeight(2);
+    rect(0, 0, carLength, carWidth, 4);
+
+    // Windshield (Roof Zone)
+    noStroke(); fill(10, 10, 15);
+    rect(4, 0, 12, carWidth - 6, 2);
+
+    // Hood (Engine Zone - Subtle glow shift)
+    fill(lerpColor(color(30), color(255,100,0, 50), damageMap.engine));
+    rect(14, 0, 10, carWidth - 4, 1);
+
+    pop();
+}
+
+function updateUI() {
+    let healthBar = document.getElementById('health-bar-fill');
+    healthBar.style.width = overallHealth + '%';
+    
+    // Color health bar
+    if (overallHealth > 60) healthBar.style.backgroundColor = 'lime';
+    else if (overallHealth > 25) healthBar.style.backgroundColor = 'orange';
+    else healthBar.style.backgroundColor = 'red';
+}
+
+function drawLidar() {
+    strokeWeight(1); stroke(0, 255, 255, 20);
+    let walls = [...leftWall, ...rightWall];
+    for (let i = 0; i < SENSOR_COUNT; i++) {
+        let rayAngle = angle + (i * (TWO_PI / SENSOR_COUNT));
+        let rayDir = p5.Vector.fromAngle(rayAngle);
+        let rayEnd = p5.Vector.add(pos, p5.Vector.mult(rayDir, SENSOR_RANGE));
+        line(pos.x, pos.y, rayEnd.x, rayEnd.y);
+    }
+}
+
+// Utility functions (Collision/Particles/Track from prev versions)
+function mouseDragged() { let m = createVector(mouseX, mouseY); if (trackPath.length === 0 || p5.Vector.dist(trackPath[trackPath.length-1], m) > 30) { trackPath.push(m); generateWalls(); } }
+function keyPressed() { if (key === 'r') { trackPath=[]; leftWall=[]; rightWall=[]; } if (key.toLowerCase() === 'p' && !carAlive) { resetCar(); } }
+function generateWalls() { leftWall = []; rightWall = []; for (let i = 0; i < trackPath.length - 1; i++) { let d = p5.Vector.sub(trackPath[i+1], trackPath[i]).normalize(); leftWall.push(p5.Vector.add(trackPath[i], createVector(-d.y, d.x).mult(60))); rightWall.push(p5.Vector.add(trackPath[i], createVector(d.y, -d.x).mult(60))); } }
+function drawTrack() { noFill(); stroke(15); strokeWeight(120); beginShape(); for(let p of trackPath) vertex(p.x, p.y); endShape(); }
+function spawnSparks(p, n) { for(let i=0; i<6; i++) sparks.push({pos: p.copy(), vel: n.copy().rotate(random(-0.7, 0.7)).mult(random(3, 7)), life: 255}); }
+
+function renderParticles(arr, type) {
+    for (let i = arr.length - 1; i >= 0; i--) {
+        let p = arr[i]; p.pos.add(p.vel); p.life -= 12;
+        
+        if(type === 'spark') { p.vel.mult(0.92); stroke(255, 180, 0, p.life); point(p.pos.x, p.pos.y); }
+        else if(type === 'nitro') { noStroke(); fill(0, 150, 255, p.life); circle(p.pos.x, p.pos.y, random(6, 12)); }
+        else if(type === 'explosion') {
+            noStroke();
+            if(p.type === 'fire') {
+                fill(255, map(p.life, 255, 100, 150, 0), 0, p.life);
+                p.vel.mult(0.96);
+                p.size *= 0.98;
+            } else if(p.type === 'smoke'){
+                fill(map(p.life, 255, 100, 50, 10), p.life * 0.5);
+                p.vel.mult(0.98);
+                p.vel.y -= 0.1; // Smoke rises
+                p.size *= 1.01; // Smoke expands
+            } else { // ember
+                fill(255, 200, 50, p.life);
+                p.vel.mult(0.99);
+                p.life -= 2; // slow fade
+                drawingContext.shadowBlur = 5; drawingContext.shadowColor = 'orange';
+            }
+            circle(p.pos.x, p.pos.y, p.size);
+            drawingContext.shadowBlur = 0;
+        }
+
+        if (p.life <= 0) arr.splice(i, 1);
+    }
+}
+
+function distToSegment(p, v, w) { let l2 = p5.Vector.dist(v, w)**2; if (l2 === 0) return {dist: p.dist(v), closest: v}; let t = constrain(((p.x - v.x) * (w.x - v.x) + (p.y - v.y) * (w.y - v.y)) / l2, 0, 1); let proj = createVector(v.x + t * (w.x - v.x), v.y + t * (w.y - v.y)); return {dist: p.dist(proj), closest: proj}; }
+function windowResized() { resizeCanvas(windowWidth, windowHeight); }
+</script>
+</body>
+</html>

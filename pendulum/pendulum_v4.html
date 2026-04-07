@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Spiro-Geometric Pendulum</title>
+    <style>
+        body { margin: 0; overflow: hidden; background: #050508; font-family: 'Segoe UI', system-ui, sans-serif; color: white; }
+        canvas { position: absolute; top: 0; left: 0; touch-action: none; }
+        #ui {
+            position: absolute; top: 20px; left: 20px; z-index: 10;
+            background: rgba(10, 10, 15, 0.95); backdrop-filter: blur(15px);
+            padding: 20px; border-radius: 16px; border: 1px solid rgba(255,255,255,0.1);
+            display: flex; flex-direction: column; gap: 12px; width: 260px;
+            box-shadow: 0 20px 50px rgba(0,0,0,0.8);
+        }
+        .controls { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+        button {
+            padding: 10px; cursor: pointer; border: none; border-radius: 6px;
+            background: #27272a; color: white; font-weight: bold; transition: 0.2s;
+            text-transform: uppercase; font-size: 0.7rem; letter-spacing: 0.5px;
+        }
+        button:hover { background: #3f3f46; }
+        button#playBtn { background: #10b981; grid-column: span 2; font-size: 0.9rem; }
+        button#playBtn.active { background: #f59e0b; color: #000; }
+        button.toggle-active { background: #6366f1 !important; box-shadow: 0 0 10px rgba(99, 102, 241, 0.4); }
+        #resetBtn { background: #ef4444; }
+        #clearTracesBtn { background: #52525b; grid-column: span 2; }
+        .slider-group { display: flex; flex-direction: column; gap: 5px; margin-top: 5px; }
+        label { font-size: 0.65rem; text-transform: uppercase; opacity: 0.5; font-weight: 800; }
+        input[type=range] { width: 100%; cursor: pointer; accent-color: #6366f1; }
+        .status { font-size: 0.7rem; padding: 6px; border-radius: 4px; text-align: center; background: rgba(0,0,0,0.4); }
+    </style>
+</head>
+<body>
+
+    <div id="ui">
+        <button id="playBtn">START SIMULATION</button>
+        <div class="controls">
+            <button id="spinBtn">Spin Base</button>
+            <button id="spinAllBtn">Spin All</button>
+            <button id="clearTracesBtn">Clear Traces Only</button>
+            <button id="resetBtn" style="grid-column: span 2;">Reset Everything</button>
+        </div>
+        
+        <div class="slider-group">
+            <label>Master Speed</label>
+            <input type="range" id="speedSlider" min="0" max="0.2" step="0.001" value="0.04">
+        </div>
+
+        <div id="statusLabel" class="status">Mode: Drawing...</div>
+    </div>
+
+    <canvas id="trailCanvas"></canvas>
+    <canvas id="mainCanvas"></canvas>
+
+    <script>
+        const canvas = document.getElementById('mainCanvas');
+        const ctx = canvas.getContext('2d');
+        const tCanvas = document.getElementById('trailCanvas');
+        const tCtx = tCanvas.getContext('2d');
+        
+        const playBtn = document.getElementById('playBtn');
+        const spinBtn = document.getElementById('spinBtn');
+        const spinAllBtn = document.getElementById('spinAllBtn');
+        const resetBtn = document.getElementById('resetBtn');
+        const clearTracesBtn = document.getElementById('clearTracesBtn');
+        const speedSlider = document.getElementById('speedSlider');
+        const statusLabel = document.getElementById('statusLabel');
+
+        let width, height, centerX, centerY;
+        let points = []; 
+        
+        let isPlaying = false;
+        let isSpinningBase = false;
+        let isSpinningAll = false;
+
+        function init() {
+            width = window.innerWidth;
+            height = window.innerHeight;
+            canvas.width = tCanvas.width = width;
+            canvas.height = tCanvas.height = height;
+            centerX = width / 2;
+            centerY = height / 2;
+            
+            points = [{ x: centerX, y: centerY, angle: 0, length: 0 }];
+            render();
+        }
+
+        window.addEventListener('resize', init);
+
+        canvas.addEventListener('mousedown', (e) => {
+            if (isPlaying) return;
+            const mx = e.clientX, my = e.clientY;
+            const prev = points[points.length - 1];
+            
+            const dist = Math.hypot(mx - prev.x, my - prev.y);
+            const ang = Math.atan2(my - prev.y, mx - prev.x);
+            
+            points.push({
+                x: mx, y: my,
+                oldX: mx, oldY: my,
+                angle: ang,
+                length: dist
+            });
+        });
+
+        playBtn.addEventListener('click', () => {
+            isPlaying = !isPlaying;
+            playBtn.textContent = isPlaying ? "PAUSE / EDIT" : "START SIMULATION";
+            playBtn.classList.toggle('active', isPlaying);
+            statusLabel.textContent = isPlaying ? "Mode: Simulating" : "Mode: Drawing...";
+        });
+
+        spinBtn.addEventListener('click', () => {
+            isSpinningBase = !isSpinningBase;
+            spinBtn.classList.toggle('toggle-active', isSpinningBase);
+        });
+
+        spinAllBtn.addEventListener('click', () => {
+            isSpinningAll = !isSpinningAll;
+            spinAllBtn.classList.toggle('toggle-active', isSpinningAll);
+        });
+
+        // The New Feature: Clear just the lines
+        clearTracesBtn.addEventListener('click', () => {
+            tCtx.clearRect(0, 0, width, height);
+            // Reset last trace positions to avoid long connecting lines when resuming
+            points.forEach(p => {
+                delete p.lx;
+                delete p.ly;
+            });
+        });
+
+        resetBtn.addEventListener('click', () => {
+            tCtx.clearRect(0, 0, width, height);
+            isPlaying = false; isSpinningBase = false; isSpinningAll = false;
+            spinBtn.classList.remove('toggle-active');
+            spinAllBtn.classList.remove('toggle-active');
+            playBtn.classList.remove('active');
+            init();
+        });
+
+        function update() {
+            if (!isPlaying) return;
+
+            const masterSpeed = parseFloat(speedSlider.value);
+
+            points.forEach((p, i) => {
+                if (i === 0) return;
+
+                if (isSpinningAll || (isSpinningBase && i === 1)) {
+                    const parent = points[i-1];
+                    p.angle += masterSpeed * (isSpinningAll ? i : 1);
+                    p.x = parent.x + Math.cos(p.angle) * p.length;
+                    p.y = parent.y + Math.sin(p.angle) * p.length;
+                    p.oldX = p.x; p.oldY = p.y;
+                } else {
+                    const vx = (p.x - p.oldX) * 0.99;
+                    const vy = (p.y - p.oldY) * 0.99;
+                    p.oldX = p.x; p.oldY = p.y;
+                    p.x += vx;
+                    p.y += vy + 0.5;
+
+                    const parent = points[i-1];
+                    const dx = p.x - parent.x;
+                    const dy = p.y - parent.y;
+                    const dist = Math.sqrt(dx*dx + dy*dy);
+                    const diff = (p.length - dist) / dist;
+                    p.x += dx * diff;
+                    p.y += dy * diff;
+                    p.angle = Math.atan2(p.y - parent.y, p.x - parent.x);
+                }
+            });
+        }
+
+        function render() {
+            ctx.clearRect(0, 0, width, height);
+
+            ctx.beginPath();
+            ctx.lineWidth = 2;
+            ctx.strokeStyle = "rgba(255,255,255,0.2)";
+            points.forEach((p, i) => {
+                if (i === 0) ctx.moveTo(p.x, p.y);
+                else ctx.lineTo(p.x, p.y);
+            });
+            ctx.stroke();
+
+            points.forEach((p, i) => {
+                ctx.fillStyle = i === 0 ? "#fbbf24" : "#6366f1";
+                ctx.beginPath();
+                ctx.arc(p.x, p.y, i === 0 ? 6 : 3, 0, Math.PI * 2);
+                ctx.fill();
+
+                if (isPlaying && i > 1) {
+                    tCtx.strokeStyle = `hsla(${(i * 50) % 360}, 80%, 60%, 0.4)`;
+                    tCtx.lineWidth = 1;
+                    tCtx.beginPath();
+                    // If p.lx exists, draw; otherwise skip (prevents lines from jumping across screen on clear)
+                    if (p.lx !== undefined) {
+                        tCtx.moveTo(p.lx, p.ly);
+                        tCtx.lineTo(p.x, p.y);
+                        tCtx.stroke();
+                    }
+                }
+                p.lx = p.x; p.ly = p.y;
+            });
+        }
+
+        function loop() {
+            update();
+            render();
+            requestAnimationFrame(loop);
+        }
+
+        init();
+        loop();
+    </script>
+</body>
+</html>

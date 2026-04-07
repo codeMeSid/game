@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NEON ATOM - GESTURE CORE</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.4.0/p5.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+    <style>
+        body { margin: 0; overflow: hidden; background: #000; font-family: 'Courier New', Courier, monospace; }
+        canvas { display: block; }
+        #ui-overlay {
+            position: absolute; top: 20px; left: 20px; color: #0ff;
+            pointer-events: none; text-transform: uppercase; letter-spacing: 2px;
+            text-shadow: 0 0 10px #0ff;
+        }
+        .status { font-size: 12px; margin-bottom: 5px; }
+        #video-input { position: absolute; bottom: 10px; right: 10px; width: 120px; border: 1px solid #0ff; opacity: 0.5; }
+    </style>
+</head>
+<body>
+    <div id="ui-overlay">
+        <div class="status">System: <span id="sys-stat">Initializing...</span></div>
+        <div class="status">Core State: <span id="core-stat">Passive</span></div>
+    </div>
+    <video id="video-input" playsinline></video>
+
+<script>
+let particles = [];
+const numParticles = 800;
+let handX = 0, handY = 0, handOpenness = 0;
+let isHandPresent = false;
+let noiseOffset = 0;
+
+// MediaPipe Setup
+const videoElement = document.getElementById('video-input');
+const hands = new Hands({locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`});
+
+hands.setOptions({
+    maxNumHands: 1,
+    modelComplexity: 1,
+    minDetectionConfidence: 0.5,
+    minTrackingConfidence: 0.5
+});
+
+hands.onResults(results => {
+    if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+        isHandPresent = true;
+        const landmarks = results.multiHandLandmarks[0];
+        
+        // Use Palm center (Landmark 9)
+        handX = width - (landmarks[9].x * width);
+        handY = landmarks[9].y * height;
+
+        // Calculate openness (Distance between thumb tip and pinky tip as a proxy)
+        let d = dist(landmarks[4].x, landmarks[4].y, landmarks[20].x, landmarks[20].y);
+        handOpenness = constrain(map(d, 0.05, 0.25, 0, 1), 0, 1);
+        
+        document.getElementById('sys-stat').innerText = "Link Active";
+        document.getElementById('sys-stat').style.color = "#0ff";
+        document.getElementById('core-stat').innerText = handOpenness > 0.7 ? "CRITICAL MASS" : "STABLE CORE";
+    } else {
+        isHandPresent = false;
+        document.getElementById('sys-stat').innerText = "Scanning...";
+        document.getElementById('sys-stat').style.color = "#f0f";
+        document.getElementById('core-stat').innerText = "Passive Flow";
+    }
+});
+
+const camera = new Camera(videoElement, {
+    onFrame: async () => { await hands.send({image: videoElement}); },
+    width: 640, height: 480
+});
+camera.start();
+
+function setup() {
+    createCanvas(windowWidth, windowHeight);
+    for (let i = 0; i < numParticles; i++) {
+        particles.push(new Particle());
+    }
+    blendMode(ADD); // Critical for the neon glow effect
+}
+
+function draw() {
+    clear();
+    background(0, 20); // Slight trail effect
+
+    if (isHandPresent) {
+        drawHandUI();
+    }
+
+    particles.forEach(p => {
+        p.update();
+        p.show();
+    });
+    
+    noiseOffset += 0.01;
+}
+
+class Particle {
+    constructor() {
+        this.pos = createVector(random(width), random(height));
+        this.vel = createVector(0, 0);
+        this.acc = createVector(0, 0);
+        this.maxSpeed = 5;
+        this.color = color(0, 255, 255);
+    }
+
+    update() {
+        if (!isHandPresent) {
+            // Random Noise Flow
+            let angle = noise(this.pos.x * 0.005, this.pos.y * 0.005, noiseOffset) * TWO_PI * 2;
+            this.acc = p5.Vector.fromAngle(angle).mult(0.1);
+            this.maxSpeed = 2;
+        } else {
+            let center = createVector(width/2, height/2);
+            let dir = p5.Vector.sub(center, this.pos);
+            let distToCenter = dir.mag();
+            
+            // Sphere Expansion Logic
+            let targetRadius = map(handOpenness, 0, 1, 50, 300);
+            let force = (distToCenter - targetRadius) * 0.05;
+            
+            dir.normalize();
+            this.acc = dir.mult(force);
+            
+            // Vibration/Critical Mass
+            let jitter = map(handOpenness, 0.5, 1, 0, 15, true);
+            this.pos.add(random(-jitter, jitter), random(-jitter, jitter));
+            
+            this.maxSpeed = 15;
+            
+            // Color Shift
+            let r = map(handOpenness, 0.7, 1, 0, 255, true);
+            this.color = color(r, 255, 255);
+        }
+
+        this.vel.add(this.acc);
+        this.vel.limit(this.maxSpeed);
+        this.pos.add(this.vel);
+        
+        // Wrap around screen
+        if (this.pos.x > width) this.pos.x = 0;
+        if (this.pos.x < 0) this.pos.x = width;
+        if (this.pos.y > height) this.pos.y = 0;
+        if (this.pos.y < 0) this.pos.y = height;
+    }
+
+    show() {
+        stroke(this.color);
+        strokeWeight(2);
+        point(this.pos.x, this.pos.y);
+    }
+}
+
+function drawHandUI() {
+    noFill();
+    stroke(0, 255, 255, 150);
+    ellipse(handX, handY, 40 + sin(frameCount*0.1)*10);
+    line(handX - 30, handY, handX + 30, handY);
+    line(handX, handY - 30, handX, handY + 30);
+}
+
+function windowResized() {
+    resizeCanvas(windowWidth, windowHeight);
+}
+</script>
+</body>
+</html>
